@@ -2594,6 +2594,20 @@ function renderTransfer(transferler) {
     tr.style.cursor = 'pointer';
     tr.title = currentLang==='en'?'Double-click to view/edit':'Çift tıklayın — detay/düzenle';
     tr.ondblclick = (function(tid) { return function() { openTransferDetay(tid); }; })(t.id);
+
+    // Bekliyor transferlerde "Teslim Al" action butonu ekle
+    if (t.durum === 'Bekliyor' && t.onay_durumu === 'Onaylandi') {
+      const canTeslim = currentUser.rol === 'admin' || currentUser.rol === 'depo' || 
+        t.teslim_alan_id === currentUser.id || !t.teslim_alan_id;
+      if (canTeslim) {
+        const tBtn = document.createElement('button');
+        tBtn.className = 'btn btn-primary btn-sm';
+        tBtn.style.cssText = 'font-size:10px;padding:3px 8px;white-space:nowrap;';
+        tBtn.textContent = currentLang==='en'?'✓ Receive':'✓ Teslim Al';
+        tBtn.onclick = (function(tid) { return function(e) { e.stopPropagation(); openTeslimAlModal(tid); }; })(t.id);
+        tr.querySelector('td:last-child').appendChild(tBtn);
+      }
+    }
     tr.innerHTML = '<td><strong>' + (t.urun_ad||'—') + '</strong>'
       + '<div class="td-muted" style="font-size:10px;font-family:var(--mono)">' + (t.urun_kayit_no||'') + '</div></td>'
       + '<td class="td-muted">' + (t.kaynak_konum_ad||'—') + '</td>'
@@ -2629,7 +2643,8 @@ function renderTransferBekleyen() {
   const container = document.getElementById('transfer-bekleyen-cards');
   container.innerHTML = '';
   bekleyenler.forEach(function(t) {
-    const canTeslimAl = currentUser.rol === 'admin' || currentUser.rol === 'depo' || t.teslim_alan_id === currentUser.id;
+    const canTeslimAl = currentUser.rol === 'admin' || currentUser.rol === 'depo' || 
+      t.teslim_alan_id === currentUser.id || !t.teslim_alan_id;
     const card = document.createElement('div');
     card.style.cssText = 'background:var(--surface2);border:1px solid var(--accent);border-radius:8px;padding:12px;';
     card.innerHTML = '<div style="font-size:12px;font-weight:600;margin-bottom:4px;">' + (t.urun_ad||'—') + '</div>'
@@ -5405,6 +5420,8 @@ async function confirmTeslimAl() {
     t.kaynak_konum_ad + ' → ' + t.hedef_konum_ad + ' (Teslim: ' + currentUser.ad + (not ? ' | ' + not : '') + ')'
   );
 
+  // Refresh allUrunler from DB to ensure konum is up to date
+  allUrunler = await db.query('urunler', { filter: 'aktif=eq.true', order: 'olusturma_tarihi.desc' });
   const urun = allUrunler.find(u => u.id === t.urun_id);
   if (urun) { urun.konum_id = t.hedef_konum_id; urun.konum_ad = t.hedef_konum_ad; urun.transfer_durum = null; }
   t.durum = 'Tamamlandi'; t.teslim_alan_ad = currentUser.ad;
@@ -5892,6 +5909,10 @@ async function saveTransfer() {
   }
 
   closeModal('modal-transfer');
+  // Sync talepler if needed
+  if (allTalepler.length) {
+    allTalepler = await db.query('talepler', { order: 'olusturma_tarihi.desc' });
+  }
 
   const sayi = selectedUrunIds.length;
   if (isSaha) {
@@ -7081,6 +7102,13 @@ function renderTalepler(talepler) {
 
   const canAnswer = currentUser.rol === 'admin' || currentUser.rol === 'depo';
 
+  function transferEtiket(talep) {
+    if (talep.transfer_id && talep.durum === 'Onaylandı') {
+      return ' <span style="font-size:9px;background:var(--green-dim,rgba(34,197,117,0.15));color:var(--green);padding:2px 6px;border-radius:3px;margin-left:4px;">🚚 Transfer Planlandı</span>';
+    }
+    return '';
+  }
+
   function durumBadge(d) {
     if (d === 'Beklemede')  return '<span class="badge badge-amber">⏳ ' + t('t.beklemede') + '</span>';
     if (d === 'Onaylandı')  return '<span class="badge badge-green">✓ ' + t('t.onaylandi') + '</span>';
@@ -7139,7 +7167,7 @@ function renderTalepler(talepler) {
       + '<div class="talep-card-title">' + (t.urun_ad || 'Genel Talep') + '</div>'
       + oncBadge(t.oncelik)
       + '</div>'
-      + durumBadge(t.durum)
+      + durumBadge(t.durum) + transferEtiket(t)
       + '</div>'
       + '<div class="talep-meta">'
       + '<span style="font-family:var(--mono);font-size:10px;color:var(--accent);">' + (t.talep_no||'—') + '</span>'
@@ -7324,7 +7352,13 @@ async function yanitTalep(id, durum) {
   const durumText = { 'Onaylandı':'✓ Onaylandı', 'Reddedildi':'✕ Reddedildi', 'Tamamlandı':'◎ Tamamlandı' };
   showToast(durumText[durum] || durum, 'success');
 
-  // Onaylandıysa ve ürün varsa → otomatik transfer_log'a "planlanacak" olarak ekle
+  // Talep eden kişiye bildirim gönder (her durumda)
+  const talepBildirim = allTalepler.find(t => t.id === id);
+  if (talepBildirim) {
+    bildirimEkle_TalepYaniti({ ...talepBildirim, durum });
+  }
+
+  // Onaylandıysa ve ürün varsa → otomatik transfer_log'a ekle
   if (durum === 'Onaylandı') {
     const talep = allTalepler.find(t => t.id === id);
     if (talep && talep.urun_id && !talep.transfer_id) {
