@@ -1157,6 +1157,7 @@ const db = {
         <div class="table-header">
           <div class="table-title"><span data-i18n="page.log">Hareket Logu</span></div>
           <div class="table-actions">
+            <button class="btn btn-ghost btn-sm" onclick="exportLogToExcel()">⬇ Excel</button>
             <select class="filter" id="filter-log-tip" onchange="loadLog()">
               <option value="" data-i18n="log.tum-islemler" data-i18n="log.tum-islemler">Tüm İşlemler</option>
               <option>YENİ KAYIT</option><option>DURUM DEĞİŞİKLİĞİ</option>
@@ -2859,16 +2860,17 @@ function exportTransferToExcel() {
 
 function exportLogToExcel() {
   if (!allLoglar || !allLoglar.length) {
-    showToast(currentLang==='en'?'No data to export':'Veri yok', 'error');
+    showToast(currentLang==='en'?'No data':'Önce Hareket Logu sayfasını açın', 'error');
     return;
   }
-  const headers = ['Tarih','Kayıt No','Ürün','İşlem','Yapan','Detay'];
+  const headers = ['Tarih','Kayıt No','Ürün','İşlem Tipi','Eski Değer','Yeni Değer','Detay'];
   const rows = allLoglar.map(l => [
     formatDate(l.tarih) || '',
     l.urun_kayit_no || '',
     l.urun_ad || '',
     l.islem_tipi || '',
-    l.yapan_ad || '',
+    l.eski_deger ? JSON.stringify(l.eski_deger) : '',
+    l.yeni_deger ? JSON.stringify(l.yeni_deger) : '',
     l.detay || ''
   ]);
   const csv = [headers, ...rows]
@@ -3968,8 +3970,7 @@ function renderMakinaKartlar(makinalar) {
   list.forEach(function(u) {
     const card = document.createElement('div');
     card.style.cssText = 'background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px;cursor:pointer;';
-    card.onclick = (function(uid) { return function() { openMakinaKart(uid); }; })(u.id);
-
+    // Remove default card onclick - buttons will handle navigation
     const bakimlar = allBakimlar.filter(b => b.urun_id === u.id);
     const sonBakim = bakimlar.filter(b => b.durum === 'Tamamlandı').sort((a,b) => new Date(b.tamamlanan_tarih) - new Date(a.tamamlanan_tarih))[0];
     const aktifBakim = bakimlar.find(b => b.durum !== 'Tamamlandı');
@@ -3994,6 +3995,34 @@ function renderMakinaKartlar(makinalar) {
       + (uyari ? '<div style="background:var(--red-dim);border-radius:5px;padding:5px 8px;font-size:11px;color:var(--red);">⚠ Bakım yaklaşıyor!</div>' : '')
       + (aktifBakim ? '<div style="background:var(--amber-dim);border-radius:5px;padding:5px 8px;font-size:11px;color:var(--amber);margin-top:6px;">📅 ' + aktifBakim.bakim_tipi + '</div>' : '');
 
+    // Butonlar — innerHTML SONRASI ekle
+    const btnDiv = document.createElement('div');
+    btnDiv.style.cssText = 'display:flex;gap:6px;margin-top:10px;flex-wrap:wrap;';
+
+    const tanimlaBtn = document.createElement('button');
+    tanimlaBtn.className = 'btn btn-ghost btn-sm';
+    tanimlaBtn.style.flex = '1';
+    tanimlaBtn.textContent = '📋 Bakım Tanımla';
+    tanimlaBtn.onclick = (function(uid) { return function(e) { e.stopPropagation(); openBakimTanimlaModal(uid); }; })(u.id);
+    btnDiv.appendChild(tanimlaBtn);
+
+    const aktifBakimlar2 = allBakimlar.filter(b => b.urun_id === u.id && b.durum !== 'Tamamlandı' && b.durum !== 'Tamamlandi');
+    if (aktifBakimlar2.length) {
+      const yapBtn = document.createElement('button');
+      yapBtn.className = 'btn btn-primary btn-sm';
+      yapBtn.style.flex = '1';
+      yapBtn.textContent = '🔧 Bakım Yap (' + aktifBakimlar2.length + ')';
+      yapBtn.onclick = (function(bid) { return function(e) { e.stopPropagation(); openBakimYapModal(bid); }; })(aktifBakimlar2[0].id);
+      btnDiv.appendChild(yapBtn);
+    }
+
+    const detayBtn = document.createElement('button');
+    detayBtn.className = 'btn btn-ghost btn-sm';
+    detayBtn.textContent = '👁 Detay';
+    detayBtn.onclick = (function(uid) { return function(e) { e.stopPropagation(); openMakinaKart(uid); }; })(u.id);
+    btnDiv.appendChild(detayBtn);
+
+    card.appendChild(btnDiv);
     grid.appendChild(card);
   });
 }
@@ -7423,7 +7452,8 @@ async function logKaydet(urunId, kayitNo, ad, islemTipi, eski, yeni, aciklama) {
 async function loadLog() {
   const tipFilter = document.getElementById('filter-log-tip').value;
   const filter = tipFilter ? `islem_tipi=eq.${encodeURIComponent(tipFilter)}` : '';
-  const loglar = await db.query('hareket_logu', { filter, order: 'tarih.desc', limit: 50 });
+  const loglar = await db.query('hareket_logu', { filter, order: 'tarih.desc', limit: 200 });
+  allLoglar = loglar; // Store for Excel export
   const tbody = document.getElementById('log-table-body');
   if (!loglar.length) {
     tbody.innerHTML = `<tr><td colspan="5"><div class="empty-state"><div class="empty-state-text">Log kaydı yok</div></div></td></tr>`;
