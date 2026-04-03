@@ -5288,6 +5288,146 @@ async function saveArizaGider() {
   if (document.getElementById('page-bakim')?.classList.contains('active')) renderBakim(allBakimlar);
 }
 
+
+// ── STOK GEÇMİŞ SİSTEMİ ──────────────────────────────────────
+let stokGecmisUrunId = null;
+let stokGecmisLogs = [];
+
+async function openStokGecmisModal(urunId, urunAd) {
+  stokGecmisUrunId = urunId;
+  document.getElementById('modal-stok-gecmis-title').textContent =
+    (currentLang === 'en' ? 'Stock History: ' : 'Stok Geçmişi: ') + urunAd;
+  document.getElementById('stok-gecmis-tip-filter').value = '';
+  document.getElementById('stok-gecmis-list').innerHTML =
+    '<div class="loading"><div class="spinner"></div></div>';
+
+  openModal('modal-stok-gecmis');
+
+  // Hareket loglarını çek
+  stokGecmisLogs = await db.query('hareket_logu', {
+    filter: 'urun_id=eq.' + urunId,
+    order: 'tarih.desc',
+    limit: 200
+  });
+
+  // Stok hareketleri tablosundan da çek (varsa)
+  let stokHareketler = [];
+  try {
+    stokHareketler = await db.query('stok_hareketleri', {
+      filter: 'stok_id=eq.' + urunId,
+      order: 'tarih.desc',
+      limit: 200
+    });
+  } catch(e) {}
+
+  // Özet hesapla
+  const urun = allStokKalemler.find(u => u.id === urunId);
+  const mevcutMiktar = urun?.stok_miktar || 0;
+
+  // Giriş/çıkış toplamları hesapla
+  let toplamGiris = 0, toplamCikis = 0;
+  stokHareketler.forEach(h => {
+    if (h.hareket_tipi === 'Giris') toplamGiris += (h.miktar||0);
+    else if (h.hareket_tipi === 'Cikis') toplamCikis += (h.miktar||0);
+  });
+  // Hareket logu'ndan da çıkar
+  stokGecmisLogs.filter(l => l.islem_tipi === 'STOK HAREKETI').forEach(l => {
+    const detay = l.detay || '';
+    if (detay.includes('+')) toplamGiris += parseInt(detay.match(/\+(\d+)/)?.[1] || 0);
+    else if (detay.includes('-')) toplamCikis += parseInt(detay.match(/-(\d+)/)?.[1] || 0);
+  });
+
+  // Özet kartlar
+  const ozetEl = document.getElementById('stok-gecmis-ozet');
+  ozetEl.innerHTML = [
+    { label: currentLang==='en'?'Current Stock':'Mevcut Stok', val: mevcutMiktar + ' ' + (urun?.stok_birim||'Adet'), color: mevcutMiktar <= (urun?.stok_min_esik||0) ? 'var(--red)' : 'var(--green)' },
+    { label: currentLang==='en'?'Total In':'Toplam Giriş', val: toplamGiris, color: 'var(--green)' },
+    { label: currentLang==='en'?'Total Out':'Toplam Çıkış', val: toplamCikis, color: 'var(--red)' }
+  ].map(s =>
+    '<div style="background:var(--surface2);padding:10px 14px;">'
+    + '<div style="font-size:10px;color:var(--text3);">' + s.label + '</div>'
+    + '<div style="font-size:18px;font-weight:600;color:' + s.color + ';font-family:var(--mono);">' + s.val + '</div>'
+    + '</div>'
+  ).join('');
+
+  renderStokGecmis();
+}
+
+function filterStokGecmis() {
+  renderStokGecmis();
+}
+
+function renderStokGecmis() {
+  const tipFilter = document.getElementById('stok-gecmis-tip-filter')?.value || '';
+  const container = document.getElementById('stok-gecmis-list');
+  if (!container) return;
+
+  // Combine hareket logu + stok hareketleri
+  let allRows = [];
+
+  // Hareket logundan stok kayıtları
+  stokGecmisLogs.forEach(l => {
+    let tip = '';
+    const detay = l.detay || '';
+    if (l.islem_tipi === 'STOK HAREKETI') {
+      if (detay.includes('+') || detay.toLowerCase().includes('giriş') || detay.toLowerCase().includes('giris')) tip = 'Giris';
+      else if (detay.includes('-') || detay.toLowerCase().includes('çıkış') || detay.toLowerCase().includes('cikis')) tip = 'Cikis';
+      else tip = 'Duzeltme';
+    } else if (l.islem_tipi === 'GÜNCELLEME' || l.islem_tipi === 'YENİ KAYIT') {
+      tip = 'Duzeltme';
+    } else if (l.islem_tipi === 'TRANSFER TAMAMLANDI') {
+      tip = 'Cikis';
+    } else if (l.islem_tipi === 'BAKIM TAMAMLANDI') {
+      tip = 'Cikis';
+    } else {
+      tip = 'Diger';
+    }
+    allRows.push({ tarih: l.tarih, tip, detay: l.detay || l.islem_tipi, yapan: l.yapan_ad, kaynak: 'log' });
+  });
+
+  // Filtrele
+  const filtered = tipFilter ? allRows.filter(r => r.tip === tipFilter) : allRows;
+
+  if (!filtered.length) {
+    container.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text3);font-size:12px;">Kayıt yok</div>';
+    return;
+  }
+
+  const tipRenk = { Giris: 'var(--green)', Cikis: 'var(--red)', Duzeltme: 'var(--amber)', Diger: 'var(--text3)' };
+  const tipIkon = { Giris: '▲', Cikis: '▼', Duzeltme: '◆', Diger: '●' };
+  const tipLabel = { Giris: 'Giriş', Cikis: 'Çıkış', Duzeltme: 'Düzeltme', Diger: '—' };
+
+  container.innerHTML = filtered.map(r =>
+    '<div style="display:grid;grid-template-columns:24px 1fr auto;gap:8px;align-items:start;padding:8px 0;border-bottom:1px solid var(--border);">'
+    + '<div style="font-size:14px;color:' + (tipRenk[r.tip]||'var(--text3)') + ';text-align:center;padding-top:2px;">' + (tipIkon[r.tip]||'●') + '</div>'
+    + '<div>'
+    + '<div style="font-size:12px;color:var(--text);">' + (r.detay||'—') + '</div>'
+    + '<div style="font-size:10px;color:var(--text3);margin-top:2px;">'
+    + '<span style="background:' + (tipRenk[r.tip]||'var(--border)') + '22;color:' + (tipRenk[r.tip]||'var(--text3)') + ';padding:1px 5px;border-radius:3px;font-size:9px;">' + (tipLabel[r.tip]||'—') + '</span>'
+    + (r.yapan ? ' · ' + r.yapan : '')
+    + '</div>'
+    + '</div>'
+    + '<div style="font-size:10px;color:var(--text3);text-align:right;white-space:nowrap;">' + formatDate(r.tarih) + '</div>'
+    + '</div>'
+  ).join('');
+}
+
+function exportStokGecmis() {
+  if (!stokGecmisLogs.length) { showToast('Kayıt yok', 'error'); return; }
+  const urun = allStokKalemler.find(u => u.id === stokGecmisUrunId);
+  const headers = ['Tarih', 'İşlem', 'Detay', 'Yapan'];
+  const rows = stokGecmisLogs.map(l => [
+    formatDate(l.tarih)||'', l.islem_tipi||'', l.detay||'', l.yapan_ad||''
+  ]);
+  const csv = [headers,...rows].map(r => r.map(c => '"'+String(c).replace(/"/g,'""')+'"').join(',')).join('\n');
+  const blob = new Blob(['﻿'+csv], {type:'text/csv;charset=utf-8;'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'StokGecmis_' + (urun?.ad||'stok').replace(/\s/g,'_') + '_' + new Date().toLocaleDateString('tr-TR').replace(/\./g,'-') + '.csv';
+  a.click();
+  showToast('İndirildi', 'success');
+}
+
 // ── BAKIM TANIMLA + BAKIM YAP SİSTEMİ ────────────────────────
 let bakimTanimlaUrunId = null;
 let bakimYapId = null;
@@ -5732,6 +5872,20 @@ function renderStok(kalemler) {
     eBtn.textContent = t('btn.duzenle');
     eBtn.onclick = (function(id){ return function(){ openUrunDetail(id); }; })(s.id);
     btnDiv.appendChild(eBtn);
+
+    // Geçmiş butonu
+    const gecmisBtn = document.createElement('button');
+    gecmisBtn.className = 'btn btn-ghost btn-sm';
+    gecmisBtn.style.marginLeft = '4px';
+    gecmisBtn.textContent = '📋';
+    gecmisBtn.title = currentLang === 'en' ? 'View History' : 'Geçmiş Kayıtlar';
+    gecmisBtn.onclick = (function(id, ad){ return function(){ openStokGecmisModal(id, ad); }; })(s.id, s.ad);
+    btnDiv.appendChild(gecmisBtn);
+
+    // Çift tıkla geçmiş
+    tr.style.cursor = 'pointer';
+    tr.title = currentLang === 'en' ? 'Double-click for history' : 'Çift tıkla — geçmiş kayıtlar';
+    tr.ondblclick = (function(id, ad){ return function(){ openStokGecmisModal(id, ad); }; })(s.id, s.ad);
 
     tbody.appendChild(tr);
   });
@@ -9658,6 +9812,35 @@ initLogin();
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('modal-ariza-gider')">İptal</button>
       <button class="btn btn-primary" onclick="saveArizaGider()">✓ Arıza Giderildi</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- MODAL: Stok Geçmiş -->
+<div class="modal-overlay hidden" id="modal-stok-gecmis">
+  <div class="modal" style="max-width:620px;">
+    <div class="modal-header">
+      <div class="modal-title" id="modal-stok-gecmis-title">Stok Geçmiş</div>
+      <button class="modal-close" onclick="closeModal('modal-stok-gecmis')">✕</button>
+    </div>
+    <div class="modal-body" style="padding:0;">
+      <div id="stok-gecmis-ozet" style="display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--border);margin-bottom:0;"></div>
+      <div style="padding:12px;">
+        <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;">
+          <select id="stok-gecmis-tip-filter" onchange="filterStokGecmis()" style="font-size:12px;padding:4px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:5px;color:var(--text);">
+            <option value="">Tüm Hareketler</option>
+            <option value="Giris">Giriş</option>
+            <option value="Cikis">Çıkış</option>
+            <option value="Duzeltme">Düzeltme</option>
+          </select>
+          <button class="btn btn-ghost btn-sm" onclick="exportStokGecmis()">⬇ Excel</button>
+        </div>
+        <div id="stok-gecmis-list" style="max-height:400px;overflow-y:auto;"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modal-stok-gecmis')">Kapat</button>
     </div>
   </div>
 </div>
