@@ -5265,6 +5265,7 @@ async function saveTransferEdit() {
   t.notlar = not;
 
   closeModal('modal-transfer-detay');
+  console.log('Transfer kayıt sayısı:', allTransferler.length);
   renderTransfer(allTransferler);
   renderTransferBekleyen();
   showToast(currentLang==='en' ? 'Transfer updated' : 'Transfer güncellendi', 'success');
@@ -5718,10 +5719,16 @@ async function loadTransfer() {
   // Load all transfers, then filter client-side for saha users
   allTransferler = await db.query('transfer_log', { order: 'gonderim_tarihi.desc' });
   if (currentUser.rol === 'saha' && currentUser.id) {
+    // Saha: kendi lokasyonundaki transferleri de görsün
+    let sahaAtama = [];
+    try { sahaAtama = JSON.parse(currentUser.konum_atama || '[]'); } catch(e) {}
     allTransferler = allTransferler.filter(t =>
       t.talep_eden_id === currentUser.id ||
       t.gonderen_id === currentUser.id ||
-      t.teslim_alan_id === currentUser.id
+      t.teslim_alan_id === currentUser.id ||
+      sahaAtama.includes('all') ||
+      sahaAtama.includes(t.hedef_konum_id) ||
+      sahaAtama.includes(t.kaynak_konum_id)
     );
   }
   // Populate konum filter
@@ -5870,6 +5877,7 @@ async function saveTransfer() {
       teslim_alan_ad: teslim?.ad || null,
       durum: 'Bekliyor',
       onay_durumu: onayDurumu,
+      gonderim_tarihi: new Date().toISOString(),
       onaylayan_id: isSaha ? null : currentUser.id,
       onaylayan_ad: isSaha ? null : currentUser.ad,
       onay_tarihi: isSaha ? null : new Date().toISOString(),
@@ -5926,10 +5934,16 @@ async function saveTransfer() {
   // Load all transfers, then filter client-side for saha users
   allTransferler = await db.query('transfer_log', { order: 'gonderim_tarihi.desc' });
   if (currentUser.rol === 'saha' && currentUser.id) {
+    // Saha: kendi lokasyonundaki transferleri de görsün
+    let sahaAtama = [];
+    try { sahaAtama = JSON.parse(currentUser.konum_atama || '[]'); } catch(e) {}
     allTransferler = allTransferler.filter(t =>
       t.talep_eden_id === currentUser.id ||
       t.gonderen_id === currentUser.id ||
-      t.teslim_alan_id === currentUser.id
+      t.teslim_alan_id === currentUser.id ||
+      sahaAtama.includes('all') ||
+      sahaAtama.includes(t.hedef_konum_id) ||
+      sahaAtama.includes(t.kaynak_konum_id)
     );
   }
   // Populate konum filter
@@ -7379,6 +7393,7 @@ async function yanitTalep(id, durum) {
           talep_eden_ad: talep.kisi_ad,
           durum: 'Bekliyor',
           onay_durumu: 'Onaylandi',
+          gonderim_tarihi: new Date().toISOString(),
           onaylayan_id: currentUser.id,
           onaylayan_ad: currentUser.ad,
           onay_tarihi: new Date().toISOString(),
