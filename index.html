@@ -2601,19 +2601,6 @@ function renderTransfer(transferler) {
     tr.title = currentLang==='en'?'Double-click to view/edit':'Çift tıklayın — detay/düzenle';
     tr.ondblclick = (function(tid) { return function() { openTransferDetay(tid); }; })(t.id);
 
-    // Bekliyor transferlerde "Teslim Al" action butonu ekle
-    if (t.durum === 'Bekliyor' && t.onay_durumu === 'Onaylandi') {
-      const canTeslim = currentUser.rol === 'admin' || currentUser.rol === 'depo' || 
-        t.teslim_alan_id === currentUser.id || !t.teslim_alan_id;
-      if (canTeslim) {
-        const tBtn = document.createElement('button');
-        tBtn.className = 'btn btn-primary btn-sm';
-        tBtn.style.cssText = 'font-size:10px;padding:3px 8px;white-space:nowrap;';
-        tBtn.textContent = currentLang==='en'?'✓ Receive':'✓ Teslim Al';
-        tBtn.onclick = (function(tid) { return function(e) { e.stopPropagation(); openTeslimAlModal(tid); }; })(t.id);
-        tr.querySelector('td:last-child').appendChild(tBtn);
-      }
-    }
     tr.innerHTML = '<td><strong>' + (t.urun_ad||'—') + '</strong>'
       + '<div class="td-muted" style="font-size:10px;font-family:var(--mono)">' + (t.urun_kayit_no||'') + '</div></td>'
       + '<td class="td-muted">' + (t.kaynak_konum_ad||'—') + '</td>'
