@@ -2618,13 +2618,28 @@ function renderTransfer(transferler) {
       + '<td class="td-muted" style="font-size:11px;">' + formatDate(t.gonderim_tarihi) + '</td>'
       + '<td></td>';
 
+    // Bekliyor transferlerde "Teslim Al" butonu — innerHTML SONRASI ekle
+    if (t.durum === 'Bekliyor' && t.onay_durumu === 'Onaylandi') {
+      const canTeslim = currentUser.rol === 'admin' || currentUser.rol === 'depo' ||
+        t.teslim_alan_id === currentUser.id || !t.teslim_alan_id;
+      if (canTeslim) {
+        const tBtn = document.createElement('button');
+        tBtn.className = 'btn btn-primary btn-sm';
+        tBtn.style.cssText = 'font-size:10px;padding:3px 8px;white-space:nowrap;margin-right:4px;';
+        tBtn.textContent = currentLang==='en'?'✓ Receive':'✓ Teslim Al';
+        tBtn.onclick = (function(tid) { return function(e) { e.stopPropagation(); openTeslimAlModal(tid); }; })(t.id);
+        const lastTd = tr.querySelector('td:last-child');
+        if (lastTd) lastTd.appendChild(tBtn);
+      }
+    }
     if (isAdminDelete) {
       const silBtn = document.createElement('button');
       silBtn.className = 'btn btn-danger btn-sm';
       silBtn.style.cssText = 'padding:2px 6px;font-size:10px;';
       silBtn.textContent = '🗑';
       silBtn.onclick = (function(tid) { return function(e) { e.stopPropagation(); kaliciSilTransfer(tid); }; })(t.id);
-      tr.querySelector('td:last-child').appendChild(silBtn);
+      const lastTd = tr.querySelector('td:last-child');
+      if (lastTd) lastTd.appendChild(silBtn);
     }
     tbody.appendChild(tr);
   });
