@@ -4053,14 +4053,44 @@ function renderMakinaKartlar(makinalar) {
     tanimlaBtn.onclick = (function(uid) { return function(e) { e.stopPropagation(); openBakimTanimlaModal(uid); }; })(u.id);
     btnDiv.appendChild(tanimlaBtn);
 
-    const aktifBakimlar2 = allBakimlar.filter(b => b.urun_id === u.id && b.durum !== 'Tamamlandı' && b.durum !== 'Tamamlandi');
-    if (aktifBakimlar2.length) {
+    // Aktif kayıtları bakım ve arıza olarak ayır
+    const aktifBakimlar2 = allBakimlar.filter(b => 
+      b.urun_id === u.id && 
+      b.durum !== 'Tamamlandı' && b.durum !== 'Tamamlandi'
+    );
+    const arizaKayitlari = aktifBakimlar2.filter(b => 
+      b.bakim_tipi === 'Ariza Onarimi' || 
+      (b.bakim_tipi && b.bakim_tipi.includes('Ariza')) ||
+      u.kondisyon === 'Arızalı'
+    );
+    const bakimKayitlari = aktifBakimlar2.filter(b => 
+      b.bakim_tipi !== 'Ariza Onarimi' && 
+      !(b.bakim_tipi && b.bakim_tipi.includes('Ariza'))
+    );
+
+    // 🔧 Bakım Yap butonu
+    if (bakimKayitlari.length) {
       const yapBtn = document.createElement('button');
       yapBtn.className = 'btn btn-primary btn-sm';
       yapBtn.style.flex = '1';
-      yapBtn.textContent = '🔧 Bakım Yap (' + aktifBakimlar2.length + ')';
-      yapBtn.onclick = (function(bid) { return function(e) { e.stopPropagation(); openBakimYapModal(bid); }; })(aktifBakimlar2[0].id);
+      yapBtn.textContent = '🔧 Bakım Yap (' + bakimKayitlari.length + ')';
+      yapBtn.onclick = (function(bid) { return function(e) { e.stopPropagation(); openBakimYapModal(bid); }; })(bakimKayitlari[0].id);
       btnDiv.appendChild(yapBtn);
+    }
+
+    // ⚠ Arıza Gider butonu
+    if (arizaKayitlari.length || u.kondisyon === 'Arızalı') {
+      const arizaBtn = document.createElement('button');
+      arizaBtn.className = 'btn btn-sm';
+      arizaBtn.style.cssText = 'flex:1;background:var(--red-dim);color:var(--red);border:1px solid var(--red);';
+      arizaBtn.textContent = '⚠ Arıza Gider' + (arizaKayitlari.length ? ' (' + arizaKayitlari.length + ')' : '');
+      arizaBtn.onclick = (function(bid, uid) { 
+        return function(e) { 
+          e.stopPropagation(); 
+          openArizaGiderModal(bid, uid); 
+        }; 
+      })(arizaKayitlari.length ? arizaKayitlari[0].id : null, u.id);
+      btnDiv.appendChild(arizaBtn);
     }
 
     const detayBtn = document.createElement('button');
@@ -5031,6 +5061,231 @@ async function uploadBakimMedia(bakimId) {
   }
 
   return { fotoUrls, videoUrl };
+}
+
+
+// ── ARIZA GİDER SİSTEMİ ───────────────────────────────────────
+let arizaGiderBakimId = null;
+let arizaGiderUrunId = null;
+let arizaGiderFotoData = [null, null, null];
+let arizaGiderVideoFile = null;
+let arizaGiderMalzemeler = [];
+
+async function openArizaGiderModal(bakimId, urunId) {
+  arizaGiderBakimId = bakimId;
+  arizaGiderUrunId = urunId;
+  arizaGiderFotoData = [null, null, null];
+  arizaGiderVideoFile = null;
+  arizaGiderMalzemeler = [];
+
+  const u = allUrunler.find(x => x.id === urunId);
+  if (!u) return;
+
+  // Info
+  document.getElementById('modal-ariza-gider-title').textContent = 'Arıza Gider: ' + u.ad;
+  document.getElementById('ariza-gider-info').innerHTML =
+    '<strong>' + u.kayit_no + ' — ' + u.ad + '</strong><br>Kondisyon: ' + u.kondisyon
+    + (bakimId ? '<br>Arıza kaydı mevcut' : '');
+
+  // Reset fields
+  document.getElementById('ariza-gider-tip').value = '';
+  document.getElementById('ariza-gider-servis').value = '';
+  document.getElementById('ariza-gider-servis-wrap').style.display = 'none';
+  document.getElementById('ariza-gider-teknisyen').value = currentUser.ad;
+  document.getElementById('ariza-gider-aciklama').value = '';
+  document.getElementById('ariza-gider-malzeme-list').innerHTML = '';
+
+  // Reset media
+  for (let i = 0; i < 3; i++) removeArizaGiderFoto(null, i);
+  removeArizaGiderVideo(null);
+
+  // Populate malzeme select
+  const sel = document.getElementById('ariza-gider-malzeme-sel');
+  sel.innerHTML = '<option value="">— Malzeme seç —</option>' +
+    allUrunler.filter(u => u.aktif && u.stokta_goster).map(u =>
+      '<option value="' + u.id + '">' + u.ad + ' (Mevcut: ' + (u.stok_miktar||0) + ' ' + (u.stok_birim||'Adet') + ')</option>'
+    ).join('');
+
+  // Servis tip onchange
+  document.getElementById('ariza-gider-tip').onchange = function() {
+    const servisWrap = document.getElementById('ariza-gider-servis-wrap');
+    servisWrap.style.display = this.value === 'dis-servis' ? 'block' : 'none';
+  };
+
+  openModal('modal-ariza-gider');
+}
+
+function triggerArizaGiderFoto(idx) {
+  document.getElementById('ariza-gider-foto-' + idx)?.click();
+}
+
+function handleArizaGiderFoto(idx) {
+  const input = document.getElementById('ariza-gider-foto-' + idx);
+  const file = input?.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    arizaGiderFotoData[idx] = e.target.result;
+    const img = document.getElementById('ariza-gider-foto-img-' + idx);
+    const ph = document.getElementById('ariza-gider-foto-ph-' + idx);
+    const rm = document.getElementById('ariza-gider-foto-rm-' + idx);
+    if (img) { img.src = e.target.result; img.style.display = 'block'; }
+    if (ph) ph.style.display = 'none';
+    if (rm) rm.style.display = 'block';
+  };
+  reader.readAsDataURL(file);
+}
+
+function removeArizaGiderFoto(event, idx) {
+  if (event) { event.stopPropagation(); event.preventDefault(); }
+  arizaGiderFotoData[idx] = null;
+  const img = document.getElementById('ariza-gider-foto-img-' + idx);
+  const ph = document.getElementById('ariza-gider-foto-ph-' + idx);
+  const rm = document.getElementById('ariza-gider-foto-rm-' + idx);
+  const input = document.getElementById('ariza-gider-foto-' + idx);
+  if (img) { img.src = ''; img.style.display = 'none'; }
+  if (ph) ph.style.display = 'block';
+  if (rm) rm.style.display = 'none';
+  if (input) input.value = '';
+}
+
+function handleArizaGiderVideo() {
+  const input = document.getElementById('ariza-gider-video-input');
+  const file = input?.files[0];
+  if (!file) return;
+  if (file.size > 50 * 1024 * 1024) { showToast('Video 50MB den küçük olmalı', 'error'); return; }
+  arizaGiderVideoFile = file;
+  const preview = document.getElementById('ariza-gider-video-preview');
+  const ph = document.getElementById('ariza-gider-video-ph');
+  const rm = document.getElementById('ariza-gider-video-rm');
+  if (preview) { preview.src = URL.createObjectURL(file); preview.style.display = 'block'; }
+  if (ph) ph.style.display = 'none';
+  if (rm) rm.style.display = 'inline-flex';
+}
+
+function removeArizaGiderVideo(event) {
+  if (event) { event.stopPropagation(); event.preventDefault(); }
+  arizaGiderVideoFile = null;
+  const preview = document.getElementById('ariza-gider-video-preview');
+  const ph = document.getElementById('ariza-gider-video-ph');
+  const rm = document.getElementById('ariza-gider-video-rm');
+  const input = document.getElementById('ariza-gider-video-input');
+  if (preview) { preview.src = ''; preview.style.display = 'none'; }
+  if (ph) ph.style.display = 'block';
+  if (rm) rm.style.display = 'none';
+  if (input) input.value = '';
+}
+
+function arizaGiderMalzemeEkle() {
+  const sel = document.getElementById('ariza-gider-malzeme-sel');
+  const adet = parseInt(document.getElementById('ariza-gider-malzeme-adet').value) || 1;
+  if (!sel.value) return;
+  const urun = allUrunler.find(u => u.id === sel.value);
+  if (!urun) return;
+  if (arizaGiderMalzemeler.find(m => m.stok_id === sel.value)) { showToast('Zaten eklendi', 'error'); return; }
+  if (adet > (urun.stok_miktar||0)) { showToast('Yetersiz stok: ' + (urun.stok_miktar||0), 'error'); return; }
+  arizaGiderMalzemeler.push({ stok_id: sel.value, stok_ad: urun.ad, miktar: adet, birim: urun.stok_birim||'Adet' });
+  sel.value = '';
+  document.getElementById('ariza-gider-malzeme-adet').value = 1;
+
+  const list = document.getElementById('ariza-gider-malzeme-list');
+  list.innerHTML = '';
+  arizaGiderMalzemeler.forEach((m, i) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:5px 8px;background:var(--surface2);border-radius:5px;font-size:12px;margin-bottom:4px;';
+    row.innerHTML = '<span>' + m.stok_ad + ' × <strong>' + m.miktar + '</strong> ' + m.birim + '</span>';
+    const rm = document.createElement('button');
+    rm.className = 'btn-icon'; rm.textContent = '✕';
+    rm.onclick = (function(idx) { return function() { arizaGiderMalzemeler.splice(idx,1); arizaGiderMalzemeEkle.call({value:''}); }; })(i);
+    row.appendChild(rm);
+    list.appendChild(row);
+  });
+}
+
+async function saveArizaGider() {
+  const tip = document.getElementById('ariza-gider-tip').value;
+  const aciklama = document.getElementById('ariza-gider-aciklama').value.trim();
+  const teknisyen = document.getElementById('ariza-gider-teknisyen').value;
+  const servis = document.getElementById('ariza-gider-servis').value;
+
+  if (!tip) { showToast('Onarım tipi seçin', 'error'); return; }
+  if (!aciklama) { showToast('Açıklama zorunlu', 'error'); return; }
+
+  const u = allUrunler.find(x => x.id === arizaGiderUrunId);
+  if (!u) return;
+
+  // Upload media
+  const fotoUrls = [];
+  for (let i = 0; i < 3; i++) {
+    if (arizaGiderFotoData[i]) {
+      const url = await uploadFotoToSupabase(arizaGiderFotoData[i], 'ariza-gider-' + arizaGiderUrunId.slice(0,6) + '-' + i);
+      if (url) fotoUrls.push(url);
+    }
+  }
+  let videoUrl = null;
+  if (arizaGiderVideoFile) {
+    try {
+      const ext = arizaGiderVideoFile.name.split('.').pop() || 'mp4';
+      const fileName = 'ariza-video/' + arizaGiderUrunId.slice(0,6) + '_gider_' + Date.now() + '.' + ext;
+      const vRes = await fetch(SUPABASE_URL + '/storage/v1/object/depot-photos/' + fileName, {
+        method: 'POST',
+        headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY, 'Content-Type': arizaGiderVideoFile.type || 'video/mp4' },
+        body: arizaGiderVideoFile
+      });
+      if (vRes.ok) videoUrl = SUPABASE_URL + '/storage/v1/object/public/depot-photos/' + fileName;
+    } catch(e) {}
+  }
+
+  // Update arıza bakım kaydını tamamlandı yap
+  if (arizaGiderBakimId) {
+    await db.update('bakim_takvimi', arizaGiderBakimId, {
+      durum: 'Tamamlandı',
+      tamamlanan_tarih: new Date().toISOString().split('T')[0],
+      tamamlayan_ad: teknisyen || currentUser.ad,
+      notlar: '[' + tip + '] ' + aciklama + (servis ? ' | Servis: ' + servis : ''),
+      foto_url: fotoUrls.length ? JSON.stringify(fotoUrls) : null,
+      video_url: videoUrl
+    });
+  }
+
+  // Stok düş
+  for (const m of arizaGiderMalzemeler) {
+    const stokUrun = allUrunler.find(x => x.id === m.stok_id);
+    if (!stokUrun) continue;
+    const yeniMiktar = Math.max(0, (stokUrun.stok_miktar||0) - m.miktar);
+    await db.update('urunler', m.stok_id, { stok_miktar: yeniMiktar });
+    stokUrun.stok_miktar = yeniMiktar;
+    try {
+      await db.insert('bakim_malzeme_log', {
+        bakim_id: arizaGiderBakimId, urun_id: m.stok_id, urun_ad: m.stok_ad,
+        miktar: m.miktar, birim: m.birim, yapan_ad: teknisyen||currentUser.ad
+      });
+    } catch(e) {}
+  }
+
+  // Kondisyon → Çalışıyor
+  await db.update('urunler', arizaGiderUrunId, {
+    kondisyon: 'Çalışıyor',
+    guncelleme_tarihi: new Date().toISOString()
+  });
+  u.kondisyon = 'Çalışıyor';
+
+  await logKaydet(arizaGiderUrunId, u.kayit_no, u.ad,
+    'ARIZA GİDERİLDİ', { kondisyon: 'Arızalı' }, { kondisyon: 'Çalışıyor' },
+    '[' + tip + '] ' + aciklama
+    + (servis ? ' | Servis: ' + servis : '')
+    + (arizaGiderMalzemeler.length ? ' | Malzeme: ' + arizaGiderMalzemeler.map(m => m.stok_ad + '×' + m.miktar).join(', ') : '')
+    + ' | ' + (teknisyen||currentUser.ad)
+  );
+
+  allBakimlar = await dbRefreshBakimlar();
+  allUrunler = await dbRefreshUrunler();
+  allMakinalar = allUrunler.filter(u => u.aktif && u.makina_tipi);
+
+  closeModal('modal-ariza-gider');
+  showToast('Arıza giderildi: ' + u.ad, 'success');
+  if (currentMakinaTab === 'kartlar') renderMakinaKartlar();
+  if (document.getElementById('page-bakim')?.classList.contains('active')) renderBakim(allBakimlar);
 }
 
 // ── BAKIM TANIMLA + BAKIM YAP SİSTEMİ ────────────────────────
@@ -9317,6 +9572,92 @@ initLogin();
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('modal-bakim-yap')">İptal</button>
       <button class="btn btn-primary" onclick="saveBakimYap()">✓ Bakım Tamamlandı</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- MODAL: Arıza Gider -->
+<div class="modal-overlay hidden" id="modal-ariza-gider">
+  <div class="modal" style="max-width:560px;">
+    <div class="modal-header">
+      <div class="modal-title" id="modal-ariza-gider-title">Arıza Gider</div>
+      <button class="modal-close" onclick="closeModal('modal-ariza-gider')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="ariza-gider-info" style="background:var(--red-dim);border:1px solid var(--red);border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:12px;color:var(--red);"></div>
+      <div class="form-grid cols-1" style="gap:10px;">
+        <div class="field">
+          <div class="field-label">Onarım Tipi <span class="req">*</span></div>
+          <select id="ariza-gider-tip">
+            <option value="">— Seçiniz —</option>
+            <option value="ic-tamir">İç Tamir (Kendi Ekip)</option>
+            <option value="dis-servis">Dışarıdan Servis</option>
+            <option value="parca-degisim">Parça Değişimi</option>
+            <option value="ayar">Ayar / Kalibrasyon</option>
+            <option value="diger">Diğer</option>
+          </select>
+        </div>
+        <div class="field" id="ariza-gider-servis-wrap" style="display:none;">
+          <div class="field-label">Servis Firması / Teknisyen</div>
+          <input type="text" id="ariza-gider-servis" placeholder="Firma adı, teknisyen adı...">
+        </div>
+        <div class="field">
+          <div class="field-label">Kullanılan Malzemeler <span style="font-size:10px;color:var(--text3);">(stoktan düşülür)</span></div>
+          <div style="display:flex;gap:8px;margin-bottom:6px;">
+            <select id="ariza-gider-malzeme-sel" style="flex:1;font-size:12px;">
+              <option value="">— Malzeme seç —</option>
+            </select>
+            <input type="number" id="ariza-gider-malzeme-adet" min="1" value="1" style="width:60px;">
+            <button class="btn btn-ghost btn-sm" onclick="arizaGiderMalzemeEkle()">+ Ekle</button>
+          </div>
+          <div id="ariza-gider-malzeme-list" style="font-size:12px;"></div>
+        </div>
+        <div class="field">
+          <div class="field-label">Yapan Teknisyen</div>
+          <input type="text" id="ariza-gider-teknisyen" placeholder="Ad Soyad">
+        </div>
+        <div class="field">
+          <div class="field-label">Açıklama / Yapılan İşlem <span class="req">*</span></div>
+          <textarea id="ariza-gider-aciklama" style="min-height:70px;" placeholder="Nasıl giderildi, ne yapıldı..."></textarea>
+        </div>
+        <div class="field">
+          <div class="field-label">Fotoğraf (opsiyonel — max 3)</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <div class="foto-upload-area" onclick="triggerArizaGiderFoto(0)" style="width:90px;height:70px;flex-shrink:0;">
+              <input type="file" id="ariza-gider-foto-0" accept="image/*" style="display:none;" onchange="handleArizaGiderFoto(0)">
+              <div id="ariza-gider-foto-ph-0" style="font-size:18px;">📷</div>
+              <img id="ariza-gider-foto-img-0" style="display:none;width:100%;height:100%;object-fit:cover;border-radius:4px;" alt="">
+              <button class="foto-remove-btn" id="ariza-gider-foto-rm-0" style="display:none;" onclick="removeArizaGiderFoto(event,0)">✕</button>
+            </div>
+            <div class="foto-upload-area" onclick="triggerArizaGiderFoto(1)" style="width:90px;height:70px;flex-shrink:0;">
+              <input type="file" id="ariza-gider-foto-1" accept="image/*" style="display:none;" onchange="handleArizaGiderFoto(1)">
+              <div id="ariza-gider-foto-ph-1" style="font-size:18px;">📷</div>
+              <img id="ariza-gider-foto-img-1" style="display:none;width:100%;height:100%;object-fit:cover;border-radius:4px;" alt="">
+              <button class="foto-remove-btn" id="ariza-gider-foto-rm-1" style="display:none;" onclick="removeArizaGiderFoto(event,1)">✕</button>
+            </div>
+            <div class="foto-upload-area" onclick="triggerArizaGiderFoto(2)" style="width:90px;height:70px;flex-shrink:0;">
+              <input type="file" id="ariza-gider-foto-2" accept="image/*" style="display:none;" onchange="handleArizaGiderFoto(2)">
+              <div id="ariza-gider-foto-ph-2" style="font-size:18px;">📷</div>
+              <img id="ariza-gider-foto-img-2" style="display:none;width:100%;height:100%;object-fit:cover;border-radius:4px;" alt="">
+              <button class="foto-remove-btn" id="ariza-gider-foto-rm-2" style="display:none;" onclick="removeArizaGiderFoto(event,2)">✕</button>
+            </div>
+          </div>
+        </div>
+        <div class="field">
+          <div class="field-label">Video (opsiyonel)</div>
+          <div id="ariza-gider-video-area" style="border:1px dashed var(--border);border-radius:8px;padding:10px;text-align:center;cursor:pointer;background:var(--surface2);" onclick="document.getElementById('ariza-gider-video-input').click()">
+            <input type="file" id="ariza-gider-video-input" accept="video/*" style="display:none;" onchange="handleArizaGiderVideo()">
+            <div id="ariza-gider-video-ph" style="font-size:12px;color:var(--text3);">🎥 Video ekle</div>
+            <video id="ariza-gider-video-preview" style="display:none;width:100%;max-height:100px;border-radius:4px;" controls></video>
+            <button id="ariza-gider-video-rm" style="display:none;" class="btn btn-danger btn-sm" onclick="removeArizaGiderVideo(event)">✕</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modal-ariza-gider')">İptal</button>
+      <button class="btn btn-primary" onclick="saveArizaGider()">✓ Arıza Giderildi</button>
     </div>
   </div>
 </div>
