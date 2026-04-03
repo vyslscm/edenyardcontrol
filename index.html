@@ -5303,38 +5303,59 @@ async function openStokGecmisModal(urunId, urunAd) {
 
   openModal('modal-stok-gecmis');
 
-  // Hareket loglarını çek
-  stokGecmisLogs = await db.query('hareket_logu', {
-    filter: 'urun_id=eq.' + urunId,
-    order: 'tarih.desc',
-    limit: 200
-  });
-
-  // Stok hareketleri tablosundan da çek (varsa)
+  // stok_hareketleri tablosundan çek (birincil kaynak)
   let stokHareketler = [];
   try {
     stokHareketler = await db.query('stok_hareketleri', {
       filter: 'stok_id=eq.' + urunId,
       order: 'tarih.desc',
-      limit: 200
+      limit: 300
     });
   } catch(e) {}
+
+  // hareket_logu'ndan stok ile ilgili kayıtları çek
+  const loglar = await db.query('hareket_logu', {
+    filter: 'urun_id=eq.' + urunId + '&islem_tipi=like.*STOK*',
+    order: 'tarih.desc',
+    limit: 100
+  });
+
+  // stok_hareketleri öncelikli, loglar tamamlayıcı
+  // stokGecmisLogs = tüm kayıtlar birleştirilmiş
+  stokGecmisLogs = [
+    ...stokHareketler.map(h => ({
+      tarih: h.tarih,
+      tip: h.hareket_tipi,
+      miktar: h.miktar,
+      onceki: h.onceki_miktar,
+      sonraki: h.sonraki_miktar,
+      detay: h.aciklama || (h.hareket_tipi === 'Giris' ? 'Stok Girişi' : h.hareket_tipi === 'Cikis' ? 'Stok Çıkışı' : 'Düzeltme'),
+      yapan: h.yapan_ad,
+      kaynak: h.kaynak || 'manuel'
+    })),
+    ...loglar.filter(l => !stokHareketler.some(h =>
+      Math.abs(new Date(h.tarih) - new Date(l.tarih)) < 2000
+    )).map(l => ({
+      tarih: l.tarih,
+      tip: l.detay && (l.detay.includes('Giriş') || l.detay.includes('Giris')) ? 'Giris'
+         : l.detay && (l.detay.includes('Çıkış') || l.detay.includes('Cikis')) ? 'Cikis'
+         : 'Duzeltme',
+      miktar: null,
+      onceki: l.eski_deger?.miktar,
+      sonraki: l.yeni_deger?.miktar,
+      detay: l.detay || l.islem_tipi,
+      yapan: l.yapan_ad,
+      kaynak: 'log'
+    }))
+  ].sort((a, b) => new Date(b.tarih) - new Date(a.tarih));
 
   // Özet hesapla
   const urun = allStokKalemler.find(u => u.id === urunId);
   const mevcutMiktar = urun?.stok_miktar || 0;
-
-  // Giriş/çıkış toplamları hesapla
   let toplamGiris = 0, toplamCikis = 0;
   stokHareketler.forEach(h => {
     if (h.hareket_tipi === 'Giris') toplamGiris += (h.miktar||0);
     else if (h.hareket_tipi === 'Cikis') toplamCikis += (h.miktar||0);
-  });
-  // Hareket logu'ndan da çıkar
-  stokGecmisLogs.filter(l => l.islem_tipi === 'STOK HAREKETI').forEach(l => {
-    const detay = l.detay || '';
-    if (detay.includes('+')) toplamGiris += parseInt(detay.match(/\+(\d+)/)?.[1] || 0);
-    else if (detay.includes('-')) toplamCikis += parseInt(detay.match(/-(\d+)/)?.[1] || 0);
   });
 
   // Özet kartlar
@@ -5362,31 +5383,10 @@ function renderStokGecmis() {
   const container = document.getElementById('stok-gecmis-list');
   if (!container) return;
 
-  // Combine hareket logu + stok hareketleri
-  let allRows = [];
-
-  // Hareket logundan stok kayıtları
-  stokGecmisLogs.forEach(l => {
-    let tip = '';
-    const detay = l.detay || '';
-    if (l.islem_tipi === 'STOK HAREKETI') {
-      if (detay.includes('+') || detay.toLowerCase().includes('giriş') || detay.toLowerCase().includes('giris')) tip = 'Giris';
-      else if (detay.includes('-') || detay.toLowerCase().includes('çıkış') || detay.toLowerCase().includes('cikis')) tip = 'Cikis';
-      else tip = 'Duzeltme';
-    } else if (l.islem_tipi === 'GÜNCELLEME' || l.islem_tipi === 'YENİ KAYIT') {
-      tip = 'Duzeltme';
-    } else if (l.islem_tipi === 'TRANSFER TAMAMLANDI') {
-      tip = 'Cikis';
-    } else if (l.islem_tipi === 'BAKIM TAMAMLANDI') {
-      tip = 'Cikis';
-    } else {
-      tip = 'Diger';
-    }
-    allRows.push({ tarih: l.tarih, tip, detay: l.detay || l.islem_tipi, yapan: l.yapan_ad, kaynak: 'log' });
-  });
-
-  // Filtrele
-  const filtered = tipFilter ? allRows.filter(r => r.tip === tipFilter) : allRows;
+  // stokGecmisLogs zaten birleştirilmiş ve sıralanmış
+  const filtered = tipFilter
+    ? stokGecmisLogs.filter(r => r.tip === tipFilter)
+    : stokGecmisLogs;
 
   if (!filtered.length) {
     container.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text3);font-size:12px;">Kayıt yok</div>';
@@ -5397,19 +5397,28 @@ function renderStokGecmis() {
   const tipIkon = { Giris: '▲', Cikis: '▼', Duzeltme: '◆', Diger: '●' };
   const tipLabel = { Giris: 'Giriş', Cikis: 'Çıkış', Duzeltme: 'Düzeltme', Diger: '—' };
 
-  container.innerHTML = filtered.map(r =>
-    '<div style="display:grid;grid-template-columns:24px 1fr auto;gap:8px;align-items:start;padding:8px 0;border-bottom:1px solid var(--border);">'
+  container.innerHTML = filtered.map(r => {
+    const miktarStr = r.miktar !== null && r.miktar !== undefined
+      ? (r.tip === 'Giris' ? '+' : r.tip === 'Cikis' ? '-' : '') + r.miktar
+      : '';
+    const stokDegisim = (r.onceki !== undefined && r.sonraki !== undefined && r.onceki !== null)
+      ? '<span style="font-size:10px;color:var(--text3);"> (' + r.onceki + ' → ' + r.sonraki + ')</span>'
+      : '';
+    return '<div style="display:grid;grid-template-columns:24px 1fr auto;gap:8px;align-items:start;padding:8px 0;border-bottom:1px solid var(--border);">'
     + '<div style="font-size:14px;color:' + (tipRenk[r.tip]||'var(--text3)') + ';text-align:center;padding-top:2px;">' + (tipIkon[r.tip]||'●') + '</div>'
     + '<div>'
-    + '<div style="font-size:12px;color:var(--text);">' + (r.detay||'—') + '</div>'
+    + '<div style="font-size:12px;color:var(--text);">' + (r.detay||'—')
+    + (miktarStr ? ' <strong style="color:' + (tipRenk[r.tip]||'var(--text)') + ';">' + miktarStr + '</strong>' : '')
+    + stokDegisim + '</div>'
     + '<div style="font-size:10px;color:var(--text3);margin-top:2px;">'
     + '<span style="background:' + (tipRenk[r.tip]||'var(--border)') + '22;color:' + (tipRenk[r.tip]||'var(--text3)') + ';padding:1px 5px;border-radius:3px;font-size:9px;">' + (tipLabel[r.tip]||'—') + '</span>'
     + (r.yapan ? ' · ' + r.yapan : '')
+    + (r.kaynak && r.kaynak !== 'manuel' ? ' · <span style="color:var(--text3);">' + r.kaynak + '</span>' : '')
     + '</div>'
     + '</div>'
     + '<div style="font-size:10px;color:var(--text3);text-align:right;white-space:nowrap;">' + formatDate(r.tarih) + '</div>'
-    + '</div>'
-  ).join('');
+    + '</div>';
+  }).join('');
 }
 
 function exportStokGecmis() {
@@ -6050,7 +6059,8 @@ async function saveStokHareket() {
       hareket_tipi: tip, miktar,
       onceki_miktar: onceki, sonraki_miktar: sonraki,
       aciklama: aciklama || null,
-      yapan_ad: currentUser.ad
+      yapan_ad: currentUser.ad,
+      kaynak: 'manuel'
     });
   } catch(e) { console.log('stok_hareketleri log skipped'); }
 
