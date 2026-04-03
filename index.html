@@ -1453,7 +1453,13 @@ async function dbRefreshUrunler() {
 }
 
 async function dbRefreshTransferler() {
+  try {
+    const rawTransfer = await fetch(SUPABASE_URL + '/rest/v1/transfer_log?order=created_at.desc', { headers: H() });
+    const rawJson = await rawTransfer.json();
+    console.log('RAW transfer_log response:', rawTransfer.status, rawJson?.length, rawJson?.[0]);
+  } catch(e) { console.log('RAW fetch error:', e.message); }
   allTransferler = await db.query('transfer_log', { order: 'gonderim_tarihi.desc' });
+  console.log('allTransferler after query:', allTransferler.length, allTransferler?.[0]);
   return allTransferler;
 }
 
@@ -5306,7 +5312,13 @@ async function confirmTransferIptal() {
     'TRANSFER İPTAL', null, null, 'İptal: ' + not + ' — ' + currentUser.ad);
 
   closeModal('modal-transfer-detay');
+  try {
+    const rawTransfer = await fetch(SUPABASE_URL + '/rest/v1/transfer_log?order=created_at.desc', { headers: H() });
+    const rawJson = await rawTransfer.json();
+    console.log('RAW transfer_log response:', rawTransfer.status, rawJson?.length, rawJson?.[0]);
+  } catch(e) { console.log('RAW fetch error:', e.message); }
   allTransferler = await db.query('transfer_log', { order: 'gonderim_tarihi.desc' });
+  console.log('allTransferler after query:', allTransferler.length, allTransferler?.[0]);
   renderTransfer(allTransferler);
   renderTransferBekleyen();
   updateTransferBadge();
@@ -5444,7 +5456,13 @@ async function confirmTeslimAl() {
 
   closeModal('modal-teslim-al');
   showToast((currentLang === 'en' ? 'Received: ' : 'Teslim alındı: ') + t.urun_ad, 'success');
+  try {
+    const rawTransfer = await fetch(SUPABASE_URL + '/rest/v1/transfer_log?order=created_at.desc', { headers: H() });
+    const rawJson = await rawTransfer.json();
+    console.log('RAW transfer_log response:', rawTransfer.status, rawJson?.length, rawJson?.[0]);
+  } catch(e) { console.log('RAW fetch error:', e.message); }
   allTransferler = await db.query('transfer_log', { order: 'gonderim_tarihi.desc' });
+  console.log('allTransferler after query:', allTransferler.length, allTransferler?.[0]);
   // Populate konum filter
   const konumFilterSel = document.getElementById('filter-transfer-konum');
   if (konumFilterSel) {
@@ -5556,7 +5574,13 @@ async function submitTransferIptal() {
     null, null, selectedIptalSebep.label + (aciklama ? ' — ' + aciklama : ''));
 
   closeModal('modal-transfer-iptal');
+  try {
+    const rawTransfer = await fetch(SUPABASE_URL + '/rest/v1/transfer_log?order=created_at.desc', { headers: H() });
+    const rawJson = await rawTransfer.json();
+    console.log('RAW transfer_log response:', rawTransfer.status, rawJson?.length, rawJson?.[0]);
+  } catch(e) { console.log('RAW fetch error:', e.message); }
   allTransferler = await db.query('transfer_log', { order: 'gonderim_tarihi.desc' });
+  console.log('allTransferler after query:', allTransferler.length, allTransferler?.[0]);
   renderTransfer(allTransferler);
   renderTransferBekleyen();
   updateTransferBadge();
@@ -5732,7 +5756,13 @@ async function loadTransfer() {
   }
 
   // Load all transfers, then filter client-side for saha users
+  try {
+    const rawTransfer = await fetch(SUPABASE_URL + '/rest/v1/transfer_log?order=created_at.desc', { headers: H() });
+    const rawJson = await rawTransfer.json();
+    console.log('RAW transfer_log response:', rawTransfer.status, rawJson?.length, rawJson?.[0]);
+  } catch(e) { console.log('RAW fetch error:', e.message); }
   allTransferler = await db.query('transfer_log', { order: 'gonderim_tarihi.desc' });
+  console.log('allTransferler after query:', allTransferler.length, allTransferler?.[0]);
   if (currentUser.rol === 'saha' && currentUser.id) {
     // Saha: kendi lokasyonundaki transferleri de görsün
     let sahaAtama = [];
@@ -5947,7 +5977,13 @@ async function saveTransfer() {
   }
 
   // Load all transfers, then filter client-side for saha users
+  try {
+    const rawTransfer = await fetch(SUPABASE_URL + '/rest/v1/transfer_log?order=created_at.desc', { headers: H() });
+    const rawJson = await rawTransfer.json();
+    console.log('RAW transfer_log response:', rawTransfer.status, rawJson?.length, rawJson?.[0]);
+  } catch(e) { console.log('RAW fetch error:', e.message); }
   allTransferler = await db.query('transfer_log', { order: 'gonderim_tarihi.desc' });
+  console.log('allTransferler after query:', allTransferler.length, allTransferler?.[0]);
   if (currentUser.rol === 'saha' && currentUser.id) {
     // Saha: kendi lokasyonundaki transferleri de görsün
     let sahaAtama = [];
