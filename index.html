@@ -3587,19 +3587,44 @@ async function quickUpdateKondisyon(id, yeni, el) {
   const eski = u.kondisyon;
   if (eski === yeni) return;
 
+  // Arızalı/Bakım Gerekli → bildirim formu doldurulmalı, direkt kaydetme
+  if (yeni === 'Arızalı' || yeni === 'Bakım Gerekli') {
+    // Önce arıza/bakım bildirim modalını aç, orası kaydedince kondisyon güncellenir
+    _pendingKondisyon = { id, yeni, el, eski };
+    setTimeout(function() { openArizaBildirimModal(id, u.kayit_no, u.ad, yeni); }, 50);
+    return; // direkt kaydetme — modal submit edince güncellenir
+  }
+
+  // Çalışıyor'a dönerken de açıklama iste (önceden arızalıysa)
+  if ((eski === 'Arızalı' || eski === 'Bakım Gerekli') && yeni === 'Çalışıyor') {
+    const aciklama = prompt(
+      (yeni === 'Çalışıyor' ? 'Tamir/bakım notu (zorunlu):' : 'Değişiklik notu:'),
+      ''
+    );
+    if (!aciklama || !aciklama.trim()) {
+      showToast('Kondisyon değişikliği için not zorunludur', 'error');
+      return;
+    }
+    await db.update('urunler', id, { kondisyon: yeni, guncelleme_tarihi: new Date().toISOString() });
+    await logKaydet(id, u.kayit_no, u.ad, 'DURUM DEĞİŞİKLİĞİ',
+      { kondisyon: eski }, { kondisyon: yeni }, eski + ' → ' + yeni + ' | Not: ' + aciklama);
+    u.kondisyon = yeni;
+    el.closest('.status-row').querySelectorAll('.status-opt').forEach(s => s.className = 'status-opt');
+    el.className = 'status-opt active-green';
+    showToast('✓ Kondisyon güncellendi: ' + yeni, 'success');
+    renderUrunTable(allUrunler);
+    return;
+  }
+
+  // Normal kondisyon değişikliği (Bakım Gerekli → Bakım Gerekli vs)
   await db.update('urunler', id, { kondisyon: yeni, guncelleme_tarihi: new Date().toISOString() });
   await logKaydet(id, u.kayit_no, u.ad, 'DURUM DEĞİŞİKLİĞİ',
-    { kondisyon: eski }, { kondisyon: yeni }, `${eski} → ${yeni}`);
-
+    { kondisyon: eski }, { kondisyon: yeni }, eski + ' → ' + yeni);
   u.kondisyon = yeni;
   el.closest('.status-row').querySelectorAll('.status-opt').forEach(s => s.className = 'status-opt');
   el.className = 'status-opt ' + (yeni==='Çalışıyor'?'active-green': yeni==='Arızalı'?'active-red':'active-amber');
   showToast('✓ Kondisyon güncellendi: ' + yeni, 'success');
   renderUrunTable(allUrunler);
-  // Open arıza bildirim modal if kondisyon is problematic
-  if (yeni === 'Arızalı' || yeni === 'Bakım Gerekli') {
-    setTimeout(function() { openArizaBildirimModal(id, u.kayit_no, u.ad, yeni); }, 300);
-  }
 }
 
 async function quickUpdateKonum(id) {
@@ -5263,6 +5288,9 @@ async function saveBakimYap() {
   closeModal('modal-bakim-yap');
   showToast('Bakım tamamlandı: ' + b.urun_ad, 'success');
 
+  // Refresh allUrunler & allMakinalar so bakım kartları up-to-date
+  allUrunler = await dbRefreshUrunler();
+  allMakinalar = allUrunler.filter(u => u.aktif && u.makina_tipi);
   if (currentMakinaTab === 'kartlar') renderMakinaKartlar();
   if (document.getElementById('page-bakim')?.classList.contains('active')) {
     renderBakim(allBakimlar);
@@ -6927,6 +6955,7 @@ function exportBakimToExcel() {
 
 // ── ARIZA BİLDİRİM SİSTEMİ ────────────────────────────────────
 let arizaUrunId = null;
+let _pendingKondisyon = null; // pending kondisyon change waiting for form
 let arizaKayitNo = null;
 let arizaAd = null;
 let arizaKondisyon = null;
@@ -7066,8 +7095,27 @@ async function submitArizaBildirim() {
     );
   }
 
+  // Kondisyon güncelle — form submit edilince kaydet
+  if (_pendingKondisyon && _pendingKondisyon.id === arizaUrunId) {
+    const pk = _pendingKondisyon;
+    await db.update('urunler', pk.id, { kondisyon: pk.yeni, guncelleme_tarihi: new Date().toISOString() });
+    await logKaydet(pk.id, pk.el?.closest ? null : null, arizaAd,
+      'DURUM DEĞİŞİKLİĞİ', { kondisyon: pk.eski }, { kondisyon: pk.yeni },
+      pk.eski + ' → ' + pk.yeni
+    );
+    const urunObj = allUrunler.find(u => u.id === pk.id);
+    if (urunObj) urunObj.kondisyon = pk.yeni;
+    if (pk.el && pk.el.closest) {
+      try {
+        pk.el.closest('.status-row').querySelectorAll('.status-opt').forEach(s => s.className = 'status-opt');
+        pk.el.className = 'status-opt ' + (pk.yeni==='Arızalı'?'active-red':'active-amber');
+      } catch(e) {}
+    }
+    renderUrunTable(allUrunler);
+    _pendingKondisyon = null;
+  }
+
   closeModal('modal-ariza-bildirim');
-  // Notify admin/depo about fault
   bildirimEkle_Ariza(arizaAd, tip);
 
   // Update bakim bekleyen list if on bakim page
