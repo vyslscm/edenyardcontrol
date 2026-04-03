@@ -4936,6 +4936,10 @@ async function loadStok() {
     filter: 'aktif=eq.true&stokta_goster=eq.true',
     order: 'ad.asc'
   });
+  // stok_miktar boşsa miktar'dan doldur (geçici fix)
+  allStokKalemler.forEach(s => {
+    if (!s.stok_miktar && s.miktar) s.stok_miktar = s.miktar;
+  });
   renderStok(allStokKalemler);
   checkStokUyarilari();
 }
@@ -5860,7 +5864,10 @@ function renderStok(kalemler) {
   tbody.innerHTML = '';
   kalemler.forEach(function(s) {
     // urunler tablosundaki stok alanlarini kullan
-    const miktar = (s.stok_miktar !== undefined && s.stok_miktar !== null) ? s.stok_miktar : (s.miktar || 0);
+    // stok_miktar öncelikli, yoksa miktar kolonundan al
+    const miktar = (s.stok_miktar > 0) ? s.stok_miktar : 
+                   (s.stok_miktar === 0 && s.miktar > 0) ? s.miktar : 
+                   (s.stok_miktar || 0);
     const minEsik = s.stok_min_esik || 0;
     const birim = s.stok_birim || s.birim || 'Adet';
     const kat = s.tip_ad || '—';
