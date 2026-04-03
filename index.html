@@ -2858,9 +2858,28 @@ function exportTransferToExcel() {
 }
 
 function exportLogToExcel() {
-  const tbody = document.getElementById('log-table-body');
-  if (!tbody) return;
-  showToast(currentLang==='en'?'Downloading...':'İndiriliyor...', 'success');
+  if (!allLoglar || !allLoglar.length) {
+    showToast(currentLang==='en'?'No data to export':'Veri yok', 'error');
+    return;
+  }
+  const headers = ['Tarih','Kayıt No','Ürün','İşlem','Yapan','Detay'];
+  const rows = allLoglar.map(l => [
+    formatDate(l.tarih) || '',
+    l.urun_kayit_no || '',
+    l.urun_ad || '',
+    l.islem_tipi || '',
+    l.yapan_ad || '',
+    l.detay || ''
+  ]);
+  const csv = [headers, ...rows]
+    .map(r => r.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(','))
+    .join('\n');
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'HareketLogu_' + new Date().toLocaleDateString('tr-TR').replace(/\./g, '-') + '.csv';
+  a.click();
+  showToast(currentLang==='en'?'Downloaded':'İndirildi', 'success');
 }
 
 function updateTransferBadge() {
@@ -4811,6 +4830,283 @@ async function loadStok() {
 
 
 
+
+// ── BAKIM TANIMLA + BAKIM YAP SİSTEMİ ────────────────────────
+let bakimTanimlaUrunId = null;
+let bakimYapId = null;
+let bakimYapMalzemeler = [];
+let seciliBakimIcerikIds = [];
+
+function openBakimTanimlaModal(urunId) {
+  bakimTanimlaUrunId = urunId;
+  const u = allUrunler.find(x => x.id === urunId);
+  if (!u) return;
+
+  document.getElementById('modal-bakim-tanimla-title').textContent =
+    (currentLang==='en'?'Define Maintenance: ':'Bakım Tanımla: ') + u.ad;
+  document.getElementById('bakim-tanimla-urun-info').textContent =
+    u.kayit_no + ' · ' + (u.konum_ad||'—');
+  document.getElementById('bakim-tanimla-tarih').value =
+    new Date().toISOString().split('T')[0];
+  document.getElementById('bakim-tanimla-not').value = '';
+  seciliBakimIcerikIds = [];
+
+  // Load bakim icerikleri as checkboxes
+  const container = document.getElementById('bakim-tanimla-icerikler');
+  container.innerHTML = '';
+
+  // Group by kategori
+  const groups = {};
+  allBakimIcerikleri.forEach(i => {
+    if (!groups[i.kategori]) groups[i.kategori] = [];
+    groups[i.kategori].push(i);
+  });
+
+  // If urun has predefined icerik_ids, pre-check them
+  let predefined = [];
+  try { predefined = JSON.parse(u.bakim_icerik_ids || '[]'); } catch(e) {}
+
+  Object.keys(groups).forEach(kat => {
+    const katDiv = document.createElement('div');
+    katDiv.style.cssText = 'font-size:10px;font-weight:600;color:var(--text3);padding:4px 0 2px;';
+    katDiv.textContent = kat;
+    container.appendChild(katDiv);
+    groups[kat].forEach(item => {
+      const label = document.createElement('label');
+      label.style.cssText = 'display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;padding:5px 8px;background:var(--surface2);border-radius:5px;';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.value = item.id;
+      cb.style.width = 'auto';
+      cb.checked = predefined.includes(item.id);
+      cb.onchange = function() {
+        if (this.checked) seciliBakimIcerikIds.push(this.value);
+        else seciliBakimIcerikIds = seciliBakimIcerikIds.filter(id => id !== this.value);
+      };
+      if (cb.checked) seciliBakimIcerikIds.push(item.id);
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(item.ad));
+      container.appendChild(label);
+    });
+  });
+
+  openModal('modal-bakim-tanimla');
+}
+
+async function saveBakimTanimla() {
+  const tarih = document.getElementById('bakim-tanimla-tarih').value;
+  const tip = document.getElementById('bakim-tanimla-tip').value;
+  const not = document.getElementById('bakim-tanimla-not').value;
+  if (!tarih) { showToast('Tarih seçin', 'error'); return; }
+
+  const u = allUrunler.find(x => x.id === bakimTanimlaUrunId);
+  if (!u) return;
+
+  const result = await db.insert('bakim_takvimi', {
+    urun_id: bakimTanimlaUrunId,
+    urun_ad: u.ad,
+    urun_kayit_no: u.kayit_no,
+    bakim_tipi: tip,
+    planlanan_tarih: tarih,
+    notlar: not || null,
+    durum: 'Planlandı',
+    olusturan_ad: currentUser.ad,
+    sorumlu_id: currentUser.id,
+    sorumlu_ad: currentUser.ad
+  });
+
+  const bakimId = Array.isArray(result) ? result[0]?.id : result?.id;
+
+  // Save icerik selections to bakim_icerikleri_log
+  if (bakimId && seciliBakimIcerikIds.length) {
+    for (const icerikId of seciliBakimIcerikIds) {
+      const icerik = allBakimIcerikleri.find(i => i.id === icerikId);
+      try {
+        await db.insert('bakim_icerikleri_log', {
+          bakim_id: bakimId,
+          icerik_id: icerikId,
+          icerik_ad: icerik?.ad || '',
+          tamamlandi: false
+        });
+      } catch(e) {}
+    }
+    // Save to urun as default icerik_ids
+    await db.update('urunler', bakimTanimlaUrunId, {
+      bakim_icerik_ids: JSON.stringify(seciliBakimIcerikIds)
+    });
+    u.bakim_icerik_ids = JSON.stringify(seciliBakimIcerikIds);
+  }
+
+  allBakimlar = await dbRefreshBakimlar();
+  closeModal('modal-bakim-tanimla');
+  showToast('Bakım planlandı: ' + u.ad, 'success');
+
+  // Refresh makina kartlari if visible
+  if (currentMakinaTab === 'kartlar') renderMakinaKartlar();
+  if (document.getElementById('page-bakim')?.classList.contains('active')) {
+    renderBakim(allBakimlar);
+  }
+}
+
+// ── BAKIM YAP ─────────────────────────────────────────────────
+async function openBakimYapModal(bakimId) {
+  bakimYapId = bakimId;
+  bakimYapMalzemeler = [];
+
+  const b = allBakimlar.find(x => x.id === bakimId);
+  if (!b) return;
+
+  document.getElementById('modal-bakim-yap-title').textContent =
+    (currentLang==='en'?'Perform Maintenance: ':'Bakım Yap: ') + b.urun_ad;
+  document.getElementById('bakim-yap-info').innerHTML =
+    '<strong>' + b.urun_kayit_no + ' — ' + b.urun_ad + '</strong><br>' +
+    (b.bakim_tipi||'—') + ' · Planlanan: ' + formatDate(b.planlanan_tarih);
+  document.getElementById('bakim-yap-teknisyen').value = currentUser.ad;
+  document.getElementById('bakim-yap-not').value = b.notlar || '';
+  document.getElementById('bakim-yap-malzeme-list').innerHTML = '';
+
+  // Load icerikler for this bakim
+  const container = document.getElementById('bakim-yap-icerikler');
+  container.innerHTML = '';
+  let icerikler = [];
+  try {
+    icerikler = await db.query('bakim_icerikleri_log', { filter: 'bakim_id=eq.' + bakimId });
+  } catch(e) {}
+
+  if (!icerikler.length) {
+    // No predefined icerikler - show all available
+    container.innerHTML = '<div style="color:var(--text3);font-size:12px;">Önceden tanımlanmış bakım içeriği yok. Aşağıdan not ekleyebilirsiniz.</div>';
+  } else {
+    icerikler.forEach(item => {
+      const row = document.createElement('label');
+      row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--surface2);border-radius:6px;cursor:pointer;border:1px solid var(--border);';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.value = item.id;
+      cb.style.width = 'auto';
+      cb.checked = item.tamamlandi || false;
+      cb.setAttribute('data-icerik-log-id', item.id);
+      const span = document.createElement('span');
+      span.style.cssText = 'font-size:13px;flex:1;';
+      span.textContent = item.icerik_ad;
+      if (item.tamamlandi) {
+        row.style.borderColor = 'var(--green)';
+        span.style.textDecoration = 'line-through';
+        span.style.color = 'var(--text3)';
+      }
+      cb.onchange = function() {
+        span.style.textDecoration = this.checked ? 'line-through' : '';
+        span.style.color = this.checked ? 'var(--text3)' : '';
+        row.style.borderColor = this.checked ? 'var(--green)' : 'var(--border)';
+      };
+      row.appendChild(cb);
+      row.appendChild(span);
+      container.appendChild(row);
+    });
+  }
+
+  // Populate malzeme select
+  const malzemeSel = document.getElementById('bakim-yap-malzeme-sel');
+  malzemeSel.innerHTML = '<option value="">— Malzeme seç —</option>' +
+    allUrunler.filter(u => u.aktif && u.stokta_goster).map(u =>
+      '<option value="' + u.id + '">' + u.ad + ' (Mevcut: ' + (u.stok_miktar||0) + ' ' + (u.stok_birim||'Adet') + ')</option>'
+    ).join('');
+
+  openModal('modal-bakim-yap');
+}
+
+function bakimYapMalzemeEkle() {
+  const sel = document.getElementById('bakim-yap-malzeme-sel');
+  const adet = parseInt(document.getElementById('bakim-yap-malzeme-adet').value) || 1;
+  if (!sel.value) return;
+  const urun = allUrunler.find(u => u.id === sel.value);
+  if (!urun) return;
+  if (bakimYapMalzemeler.find(m => m.stok_id === sel.value)) {
+    showToast('Zaten eklendi', 'error'); return;
+  }
+  if (adet > (urun.stok_miktar||0)) {
+    showToast('Yetersiz stok: ' + (urun.stok_miktar||0) + ' mevcut', 'error'); return;
+  }
+  bakimYapMalzemeler.push({ stok_id: sel.value, stok_ad: urun.ad, miktar: adet, birim: urun.stok_birim||'Adet' });
+  sel.value = ''; document.getElementById('bakim-yap-malzeme-adet').value = 1;
+  renderBakimYapMalzemeler();
+}
+
+function renderBakimYapMalzemeler() {
+  const list = document.getElementById('bakim-yap-malzeme-list');
+  list.innerHTML = '';
+  bakimYapMalzemeler.forEach((m, i) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:5px 8px;background:var(--surface2);border-radius:5px;font-size:12px;margin-bottom:4px;';
+    row.innerHTML = '<span>' + m.stok_ad + ' × <strong>' + m.miktar + '</strong> ' + m.birim + '</span>';
+    const rm = document.createElement('button');
+    rm.className = 'btn-icon'; rm.textContent = '✕';
+    rm.onclick = (function(idx) { return function() { bakimYapMalzemeler.splice(idx,1); renderBakimYapMalzemeler(); }; })(i);
+    row.appendChild(rm);
+    list.appendChild(row);
+  });
+}
+
+async function saveBakimYap() {
+  if (!bakimYapId) return;
+  const b = allBakimlar.find(x => x.id === bakimYapId);
+  if (!b) return;
+  const teknisyen = document.getElementById('bakim-yap-teknisyen').value;
+  const not = document.getElementById('bakim-yap-not').value;
+
+  // Get checked icerikler
+  const checkboxes = document.querySelectorAll('#bakim-yap-icerikler input[type="checkbox"]');
+  const tamamlananlar = [];
+  for (const cb of checkboxes) {
+    const logId = cb.getAttribute('data-icerik-log-id');
+    if (logId) {
+      await db.update('bakim_icerikleri_log', logId, { tamamlandi: cb.checked });
+      if (cb.checked) tamamlananlar.push(logId);
+    }
+  }
+
+  // Process malzeme stok düşme
+  for (const m of bakimYapMalzemeler) {
+    const urun = allUrunler.find(u => u.id === m.stok_id);
+    if (!urun) continue;
+    const yeniMiktar = Math.max(0, (urun.stok_miktar||0) - m.miktar);
+    await db.update('urunler', m.stok_id, { stok_miktar: yeniMiktar });
+    urun.stok_miktar = yeniMiktar;
+    try {
+      await db.insert('bakim_malzeme_log', {
+        bakim_id: bakimYapId, urun_id: m.stok_id, urun_ad: m.stok_ad,
+        miktar: m.miktar, birim: m.birim, yapan_ad: teknisyen||currentUser.ad
+      });
+    } catch(e) {}
+    if (urun.stok_min_esik > 0 && yeniMiktar <= urun.stok_min_esik) {
+      bildirimEkle_KritikStok(urun.ad);
+    }
+  }
+
+  // Update bakim record
+  await db.update('bakim_takvimi', bakimYapId, {
+    durum: 'Tamamlandı',
+    tamamlanan_tarih: new Date().toISOString().split('T')[0],
+    tamamlayan_ad: teknisyen || currentUser.ad,
+    notlar: not || b.notlar || null
+  });
+
+  await logKaydet(b.urun_id, b.urun_kayit_no, b.urun_ad,
+    'BAKIM TAMAMLANDI', null, null,
+    (b.bakim_tipi||'Bakım') + ' — ' + (teknisyen||currentUser.ad)
+    + (bakimYapMalzemeler.length ? ' | Malzeme: ' + bakimYapMalzemeler.map(m => m.stok_ad + '×' + m.miktar).join(', ') : '')
+  );
+
+  allBakimlar = await dbRefreshBakimlar();
+  closeModal('modal-bakim-yap');
+  showToast('Bakım tamamlandı: ' + b.urun_ad, 'success');
+
+  if (currentMakinaTab === 'kartlar') renderMakinaKartlar();
+  if (document.getElementById('page-bakim')?.classList.contains('active')) {
+    renderBakim(allBakimlar);
+  }
+}
+
 // ── MAKİNA SAATİ SİSTEMİ ──────────────────────────────────────
 function toggleMakinaFields(prefix) {
   const cb = document.getElementById(prefix + '-makina-tipi');
@@ -6265,11 +6561,12 @@ function renderBakim(bakimlar) {
   tbody.innerHTML = '';
   bakimlar.forEach(function(b) {
     const tarih = new Date(b.planlanan_tarih);
-    const gecikti = b.durum !== currentLang==='en'?'Completed':'Tamamlandi' && tarih < bugun;
-    const yaklasan = b.durum !== currentLang==='en'?'Completed':'Tamamlandi' && !gecikti && (tarih - bugun) <= 7*24*60*60*1000;
+    const isTamamlandi = b.durum === 'Tamamlandı' || b.durum === 'Tamamlandi' || b.durum === 'Completed';
+    const gecikti = !isTamamlandi && tarih < bugun;
+    const yaklasan = !isTamamlandi && !gecikti && (tarih - bugun) <= 7*24*60*60*1000;
     const fark = Math.ceil((tarih - bugun) / (1000*60*60*24));
     let db2 = '';
-    if (b.durum === currentLang==='en'?'Completed':'Tamamlandi') db2 = '<span class="badge badge-green">Tamamlandi</span>';
+    if (isTamamlandi) db2 = '<span class="badge badge-green">' + (currentLang==='en'?'Completed':'Tamamlandı') + '</span>';
     else if (gecikti) db2 = '<span class="badge badge-red">' + Math.abs(fark) + ' ' + (currentLang==="en"?"days overdue":"gun gecikti") + '</span>';
     else if (yaklasan) db2 = '<span class="badge badge-amber">' + fark + ' ' + (currentLang==="en"?"days left":"gun kaldi") + '</span>';
     else db2 = '<span class="badge badge-green">Planlandı</span>';
@@ -8592,5 +8889,87 @@ initLogin();
     </div>
   </div>
 </div>
+
+<!-- MODAL: Bakım Tanımla -->
+<div class="modal-overlay hidden" id="modal-bakim-tanimla">
+  <div class="modal" style="max-width:500px;">
+    <div class="modal-header">
+      <div class="modal-title" id="modal-bakim-tanimla-title">Bakım Tanımla</div>
+      <button class="modal-close" onclick="closeModal('modal-bakim-tanimla')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="bakim-tanimla-urun-info" style="background:var(--surface2);border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:12px;color:var(--text2);"></div>
+      <div class="form-grid cols-1" style="gap:10px;">
+        <div class="field">
+          <div class="field-label">Bakım Tipi</div>
+          <select id="bakim-tanimla-tip">
+            <option value="Periyodik Bakim">Periyodik Bakım</option>
+            <option value="Ariza Onarimi">Arıza Onarımı</option>
+            <option value="Kontrol">Kontrol</option>
+          </select>
+        </div>
+        <div class="field">
+          <div class="field-label">Planlanan Tarih <span class="req">*</span></div>
+          <input type="date" id="bakim-tanimla-tarih">
+        </div>
+        <div class="field">
+          <div class="field-label">Bakım İçerikleri</div>
+          <div id="bakim-tanimla-icerikler" style="display:flex;flex-direction:column;gap:6px;max-height:200px;overflow-y:auto;"></div>
+        </div>
+        <div class="field">
+          <div class="field-label">Not</div>
+          <textarea id="bakim-tanimla-not" style="min-height:56px;" placeholder="Bakım notları..."></textarea>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modal-bakim-tanimla')">İptal</button>
+      <button class="btn btn-primary" onclick="saveBakimTanimla()">Kaydet</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: Bakım Yap -->
+<div class="modal-overlay hidden" id="modal-bakim-yap">
+  <div class="modal" style="max-width:560px;">
+    <div class="modal-header">
+      <div class="modal-title" id="modal-bakim-yap-title">Bakım Yap</div>
+      <button class="modal-close" onclick="closeModal('modal-bakim-yap')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="bakim-yap-info" style="background:var(--surface2);border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:12px;color:var(--text2);"></div>
+      <div class="form-grid cols-1" style="gap:10px;">
+        <div class="field">
+          <div class="field-label">Bakım İçerikleri <span style="font-size:10px;color:var(--text3);">(tamamlananları işaretle)</span></div>
+          <div id="bakim-yap-icerikler" style="display:flex;flex-direction:column;gap:6px;"></div>
+        </div>
+        <div class="field">
+          <div class="field-label">Kullanılan Malzemeler <span style="font-size:10px;color:var(--text3);">(stoktan düşülür)</span></div>
+          <div style="display:flex;gap:8px;margin-bottom:6px;">
+            <select id="bakim-yap-malzeme-sel" style="flex:1;font-size:12px;">
+              <option value="">— Malzeme seç —</option>
+            </select>
+            <input type="number" id="bakim-yap-malzeme-adet" min="1" value="1" style="width:60px;">
+            <button class="btn btn-ghost btn-sm" onclick="bakimYapMalzemeEkle()">+ Ekle</button>
+          </div>
+          <div id="bakim-yap-malzeme-list" style="font-size:12px;"></div>
+        </div>
+        <div class="field">
+          <div class="field-label">Yapan Teknisyen</div>
+          <input type="text" id="bakim-yap-teknisyen" placeholder="Ad Soyad">
+        </div>
+        <div class="field">
+          <div class="field-label">Tamamlama Notu</div>
+          <textarea id="bakim-yap-not" style="min-height:56px;" placeholder="Yapılan işlemler, notlar..."></textarea>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modal-bakim-yap')">İptal</button>
+      <button class="btn btn-primary" onclick="saveBakimYap()">✓ Bakım Tamamlandı</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>
