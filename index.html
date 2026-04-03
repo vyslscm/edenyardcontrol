@@ -3748,7 +3748,13 @@ async function kaydetYeniUrun() {
     servis_saati_mevcut: parseInt(document.getElementById('nk-servis-saat')?.value) || 0,
     bakim_aralik_saat: parseInt(document.getElementById('nk-bakim-aralik')?.value) || null,
     stokta_goster: document.getElementById('nk-stokta-goster')?.checked || false,
-    stok_miktar: parseInt(document.getElementById('nk-stok-miktar')?.value) || 0,
+    stok_miktar: (() => {
+      // Stok gösteriliyorsa stok_miktar = girilen miktar
+      const stokGoster = document.getElementById('nk-stokta-goster')?.checked;
+      const stokMiktar = parseInt(document.getElementById('nk-stok-miktar')?.value) || 0;
+      const genelMiktar = parseInt(document.getElementById('nk-miktar')?.value) || 1;
+      return stokGoster ? (stokMiktar || genelMiktar) : stokMiktar;
+    })(),
     stok_min_esik: parseInt(document.getElementById('nk-stok-min')?.value) || 0,
     stok_birim: document.getElementById('nk-stok-birim')?.value || 'Adet',
     olusturan_id: currentUser.id,
@@ -5806,6 +5812,15 @@ function toggleStokFields(prefix) {
   const cb = document.getElementById(prefix + '-stokta-goster');
   const fields = document.getElementById(prefix + '-stok-fields');
   if (fields) fields.style.display = cb?.checked ? 'block' : 'none';
+
+  // Stok açılınca stok_miktar'ı genel miktardan doldur (eğer boşsa)
+  if (cb?.checked) {
+    const stokMiktarEl = document.getElementById(prefix + '-stok-miktar');
+    const genelMiktarEl = document.getElementById(prefix + '-miktar');
+    if (stokMiktarEl && genelMiktarEl && (!stokMiktarEl.value || stokMiktarEl.value === '0')) {
+      stokMiktarEl.value = genelMiktarEl.value || '';
+    }
+  }
 }
 
 function populateStokKatSelect() {
@@ -5845,7 +5860,7 @@ function renderStok(kalemler) {
   tbody.innerHTML = '';
   kalemler.forEach(function(s) {
     // urunler tablosundaki stok alanlarini kullan
-    const miktar = s.stok_miktar || 0;
+    const miktar = (s.stok_miktar !== undefined && s.stok_miktar !== null) ? s.stok_miktar : (s.miktar || 0);
     const minEsik = s.stok_min_esik || 0;
     const birim = s.stok_birim || s.birim || 'Adet';
     const kat = s.tip_ad || '—';
@@ -8084,7 +8099,12 @@ async function saveEditUrun() {
     servis_saati_mevcut: parseInt(document.getElementById('edit-servis-saat')?.value) || 0,
     bakim_aralik_saat: parseInt(document.getElementById('edit-bakim-aralik')?.value) || null,
     stokta_goster: document.getElementById('edit-stokta-goster')?.checked || false,
-    stok_miktar: parseInt(document.getElementById('edit-stok-miktar')?.value) || 0,
+    stok_miktar: (() => {
+      const stokGoster = document.getElementById('edit-stokta-goster')?.checked;
+      const stokMiktar = parseInt(document.getElementById('edit-stok-miktar')?.value) || 0;
+      const genelMiktar = parseInt(document.getElementById('edit-miktar')?.value) || 1;
+      return stokGoster ? (stokMiktar || genelMiktar) : stokMiktar;
+    })(),
     stok_min_esik: parseInt(document.getElementById('edit-stok-min')?.value) || 0,
     stok_birim: document.getElementById('edit-stok-birim')?.value || 'Adet',
     marka: document.getElementById('edit-marka').value || null,
