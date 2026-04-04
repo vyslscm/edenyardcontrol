@@ -3940,6 +3940,16 @@ async function kaydetYeniUrun() {
   }
 
   allUrunler.unshift(newRecord || data);
+
+  // Sarf stok ise stok_gruplari güncelle
+  const _stokGoster = document.getElementById('nk-stokta-goster')?.checked;
+  const _tipId = document.getElementById('nk-tip').value;
+  const _tipObj = allTipler.find(t => t.id === _tipId);
+  const _altKat = getSubKatValue('nk') || '';
+  if (_stokGoster && _tipId) {
+    await guncellStokGrubu(_tipId, _tipObj?.ad || '', _altKat);
+  }
+
   showToast(`✓ ${kayitNo} — ${ad} kaydedildi`, 'success');
   clearNewForm();
   await generateNewId();
@@ -5087,6 +5097,7 @@ function downloadQR() {
 
 // ── SARF STOK TAKİBİ ──────────────────────────────────────────
 let allStokKalemler = [];
+let allStokGruplari = []; // tip+alt_kategori bazlı stok grupları
 let allStokKategoriler = [];
 let editingStokId = null;
 let editingStokHarId = null;
@@ -5106,32 +5117,68 @@ async function loadStok() {
     if (!s.stok_miktar && s.miktar) s.stok_miktar = s.miktar;
   });
 
-  // ── Tip + Alt Kategori bazında grupla ──
-  // Aynı tip + alt_kategori → tek satır, miktarlar toplanır
-  const _stokGrupMap = {};
-  _stokRaw.forEach(s => {
-    const grupKey = (s.tip_id || s.malzeme_tipi_id || '') + '|' + (s.alt_kategori || '');
-    if (!_stokGrupMap[grupKey]) {
-      // İlk kaydı ana kayıt olarak al
-      _stokGrupMap[grupKey] = {
-        ...s,
-        _grupKayitlar: [s],
-        _grupKey: grupKey
+  // stok_gruplari tablosunu çek (varsa)
+  let _dbGruplar = [];
+  try {
+    _dbGruplar = await db.query('stok_gruplari', { order: 'tip_ad.asc' });
+  } catch(e) {}
+
+  if (_dbGruplar.length) {
+    // DB'den grup tablosu var — kullan
+    allStokGruplari = _dbGruplar;
+    allStokKalemler = _dbGruplar.map(g => {
+      const kayitlar = _stokRaw.filter(s =>
+        s.tip_id === g.tip_id &&
+        (s.alt_kategori || '') === (g.alt_kategori || '')
+      );
+      const tipAd = g.tip_ad || '';
+      const altKat = g.alt_kategori || '';
+      return {
+        id: g.id, // grup ID kullan
+        _isGrup: true,
+        _grupId: g.id,
+        _grupKayitlar: kayitlar,
+        kayit_no: kayitlar.length + ' kayıt',
+        ad: tipAd + (altKat ? ' › ' + altKat : ''),
+        tip_ad: tipAd,
+        alt_kategori: altKat,
+        stok_miktar: g.toplam_miktar,
+        stok_min_esik: g.min_esik || 0,
+        stok_birim: g.birim || 'Adet',
+        konum_ad: kayitlar.length === 1 ? kayitlar[0]?.konum_ad : 'Çoklu Saha',
+        _kayitAdlari: kayitlar.map(k => k.ad).join(', ')
       };
-    } else {
-      // Sonraki kayıtların miktarlarını ekle
-      _stokGrupMap[grupKey].stok_miktar = (_stokGrupMap[grupKey].stok_miktar || 0) + (s.stok_miktar || 0);
-      _stokGrupMap[grupKey].stok_min_esik = Math.max(_stokGrupMap[grupKey].stok_min_esik || 0, s.stok_min_esik || 0);
-      _stokGrupMap[grupKey]._grupKayitlar.push(s);
-      // Birden fazla kayıt varsa adı "Tip > AltKategori" formatında göster
-      if (_stokGrupMap[grupKey]._grupKayitlar.length > 1) {
-        const tipAd = s.tip_ad || _stokGrupMap[grupKey].tip_ad || '';
+    });
+  } else {
+    // DB'de grup tablosu yok — anlık hesapla (fallback)
+    const _grupMap = {};
+    _stokRaw.forEach(s => {
+      const k = (s.tip_id || '') + '|' + (s.alt_kategori || '');
+      if (!_grupMap[k]) {
+        const tipAd = s.tip_ad || '';
         const altKat = s.alt_kategori || '';
-        _stokGrupMap[grupKey]._grupAd = tipAd + (altKat ? ' › ' + altKat : '');
+        _grupMap[k] = {
+          id: s.id, _isGrup: false, _grupKayitlar: [s],
+          kayit_no: '1 kayıt',
+          ad: tipAd + (altKat ? ' › ' + altKat : '') || s.ad,
+          tip_ad: tipAd, alt_kategori: altKat,
+          stok_miktar: s.stok_miktar || 0,
+          stok_min_esik: s.stok_min_esik || 0,
+          stok_birim: s.stok_birim || 'Adet',
+          konum_ad: s.konum_ad, _kayitAdlari: s.ad
+        };
+      } else {
+        _grupMap[k].stok_miktar += (s.stok_miktar || 0);
+        _grupMap[k].stok_min_esik = Math.max(_grupMap[k].stok_min_esik, s.stok_min_esik || 0);
+        _grupMap[k]._grupKayitlar.push(s);
+        _grupMap[k].kayit_no = _grupMap[k]._grupKayitlar.length + ' kayıt';
+        _grupMap[k].konum_ad = 'Çoklu Saha';
+        _grupMap[k]._kayitAdlari = _grupMap[k]._grupKayitlar.map(r => r.ad).join(', ');
       }
-    }
-  });
-  allStokKalemler = Object.values(_stokGrupMap);
+    });
+    allStokKalemler = Object.values(_grupMap);
+    allStokGruplari = [];
+  }
   renderStok(allStokKalemler);
   checkStokUyarilari();
 }
@@ -5490,6 +5537,58 @@ async function saveArizaGider() {
   if (document.getElementById('page-bakim')?.classList.contains('active')) renderBakim(allBakimlar);
 }
 
+
+
+// ── STOK GRUBU GÜNCELLE ───────────────────────────────────────
+async function guncellStokGrubu(tipId, tipAd, altKategori) {
+  if (!tipId) return;
+  // Bu tip+alt_kategori'deki tüm aktif stok kayıtlarının toplamını hesapla
+  const kayitlar = allUrunler.filter(u =>
+    u.aktif && u.stokta_goster &&
+    u.tip_id === tipId &&
+    (u.alt_kategori || '') === (altKategori || '')
+  );
+  const toplam = kayitlar.reduce((sum, u) => sum + (u.stok_miktar || u.miktar || 0), 0);
+  const birim = kayitlar[0]?.stok_birim || 'Adet';
+  const minEsik = Math.max(...kayitlar.map(u => u.stok_min_esik || 0));
+
+  // DB'de bu grup var mı?
+  let gruplar = [];
+  try {
+    gruplar = await db.query('stok_gruplari', {
+      filter: 'tip_id=eq.' + tipId
+    });
+  } catch(e) {}
+
+  const mevcutGrup = gruplar.find(g => (g.alt_kategori||'') === (altKategori||''));
+
+  if (mevcutGrup) {
+    // Güncelle
+    await db.update('stok_gruplari', mevcutGrup.id, {
+      toplam_miktar: toplam,
+      min_esik: minEsik,
+      birim,
+      guncelleme_tarihi: new Date().toISOString()
+    });
+  } else {
+    // Yeni grup oluştur
+    await db.insert('stok_gruplari', {
+      tip_id: tipId,
+      tip_ad: tipAd,
+      alt_kategori: altKategori || null,
+      toplam_miktar: toplam,
+      min_esik: minEsik,
+      birim
+    });
+  }
+}
+
+// Stok miktarı değişince grubu güncelle
+async function guncellStokGrubuByUrunId(urunId) {
+  const u = allUrunler.find(x => x.id === urunId);
+  if (!u || !u.stokta_goster || !u.tip_id) return;
+  await guncellStokGrubu(u.tip_id, u.tip_ad || '', u.alt_kategori || '');
+}
 
 // ── STOK GEÇMİŞ SİSTEMİ ──────────────────────────────────────
 let stokGecmisUrunId = null;
@@ -6079,14 +6178,10 @@ function renderStok(kalemler) {
     const kritik = minEsik > 0 && miktar <= minEsik;
 
     const tr = document.createElement('tr');
-    // Grup adı mı yoksa orijinal ad mı?
-    const gorAd = s._grupAd || s.ad || '—';
-    const gorKayitNo = s._grupKayitlar && s._grupKayitlar.length > 1
-      ? s._grupKayitlar.length + ' kayıt'
-      : (s.kayit_no || '—');
-    const gorMarka = s._grupKayitlar && s._grupKayitlar.length > 1
-      ? s._grupKayitlar.map(k => k.ad).join(', ')
-      : (s.marka || '');
+    // Grup formatında göster
+    const gorAd = s.ad || '—';
+    const gorKayitNo = s.kayit_no || '—';
+    const gorMarka = s._kayitAdlari || s.marka || '';
     tr.innerHTML =
       '<td class="td-mono" style="font-size:11px;">' + gorKayitNo + '</td>'
       + '<td><strong>' + gorAd + '</strong>'
@@ -6310,6 +6405,8 @@ async function saveStokHareket() {
   );
 
   s.stok_miktar = sonraki;
+  // Stok grubunu güncelle
+  await guncellStokGrubuByUrunId(stokId);
   closeModal('modal-stok-hareket');
   const tipStr = tip === 'Giris' ? '+' + miktar : tip === 'Cikis' ? '-' + miktar : '=' + miktar;
   showToast(s.ad + ' ' + tipStr + ' ' + birim + ' → ' + sonraki, 'success');
