@@ -3023,7 +3023,7 @@ function exportTransferToExcel() {
 
 function exportLogToExcel() {
   if (!allLoglar || !allLoglar.length) {
-    showToast(currentLang==='en'?'No data':'Önce Hareket Logu sayfasını açın', 'error');
+    showToast(currentLang==='en'?'No data — open Log page first':'Önce Hareket Logu sayfasını açın', 'error');
     return;
   }
   const headers = ['Tarih','Kayıt No','Ürün','İşlem Tipi','Eski Değer','Yeni Değer','Detay'];
@@ -5097,14 +5097,41 @@ async function loadStok() {
   populateStokKatSelect();
 
   // Load stok items from urunler table (stokta_goster = true)
-  allStokKalemler = await db.query('urunler', {
+  const _stokRaw = await db.query('urunler', {
     filter: 'aktif=eq.true&stokta_goster=eq.true',
     order: 'ad.asc'
   });
-  // stok_miktar boşsa miktar'dan doldur (geçici fix)
-  allStokKalemler.forEach(s => {
+  // stok_miktar boşsa miktar'dan doldur
+  _stokRaw.forEach(s => {
     if (!s.stok_miktar && s.miktar) s.stok_miktar = s.miktar;
   });
+
+  // ── Tip + Alt Kategori bazında grupla ──
+  // Aynı tip + alt_kategori → tek satır, miktarlar toplanır
+  const _stokGrupMap = {};
+  _stokRaw.forEach(s => {
+    const grupKey = (s.tip_id || s.malzeme_tipi_id || '') + '|' + (s.alt_kategori || '');
+    if (!_stokGrupMap[grupKey]) {
+      // İlk kaydı ana kayıt olarak al
+      _stokGrupMap[grupKey] = {
+        ...s,
+        _grupKayitlar: [s],
+        _grupKey: grupKey
+      };
+    } else {
+      // Sonraki kayıtların miktarlarını ekle
+      _stokGrupMap[grupKey].stok_miktar = (_stokGrupMap[grupKey].stok_miktar || 0) + (s.stok_miktar || 0);
+      _stokGrupMap[grupKey].stok_min_esik = Math.max(_stokGrupMap[grupKey].stok_min_esik || 0, s.stok_min_esik || 0);
+      _stokGrupMap[grupKey]._grupKayitlar.push(s);
+      // Birden fazla kayıt varsa adı "Tip > AltKategori" formatında göster
+      if (_stokGrupMap[grupKey]._grupKayitlar.length > 1) {
+        const tipAd = s.tip_ad || _stokGrupMap[grupKey].tip_ad || '';
+        const altKat = s.alt_kategori || '';
+        _stokGrupMap[grupKey]._grupAd = tipAd + (altKat ? ' › ' + altKat : '');
+      }
+    }
+  });
+  allStokKalemler = Object.values(_stokGrupMap);
   renderStok(allStokKalemler);
   checkStokUyarilari();
 }
@@ -5467,9 +5494,14 @@ async function saveArizaGider() {
 // ── STOK GEÇMİŞ SİSTEMİ ──────────────────────────────────────
 let stokGecmisUrunId = null;
 let stokGecmisLogs = [];
+let stokGecmisGrupIds = [];
 
 async function openStokGecmisModal(urunId, urunAd) {
   stokGecmisUrunId = urunId;
+  // Grup ise tüm alt kayıtların ID'lerini al
+  const _gecmisUrun = allStokKalemler.find(u => u.id === urunId);
+  const _gecmisIds = _gecmisUrun?._grupKayitlar?.map(k => k.id) || [urunId];
+  stokGecmisGrupIds = _gecmisIds;
   document.getElementById('modal-stok-gecmis-title').textContent =
     (currentLang === 'en' ? 'Stock History: ' : 'Stok Geçmişi: ') + urunAd;
   document.getElementById('stok-gecmis-tip-filter').value = '';
@@ -5480,20 +5512,28 @@ async function openStokGecmisModal(urunId, urunAd) {
 
   // stok_hareketleri tablosundan çek (birincil kaynak)
   let stokHareketler = [];
+  // Grup ise tüm alt kayıtları çek
+  const _fetchIds = stokGecmisGrupIds.length ? stokGecmisGrupIds : [urunId];
   try {
-    stokHareketler = await db.query('stok_hareketleri', {
-      filter: 'stok_id=eq.' + urunId,
-      order: 'tarih.desc',
-      limit: 300
-    });
+    const _harResults = await Promise.all(
+      _fetchIds.map(id => db.query('stok_hareketleri', {
+        filter: 'stok_id=eq.' + id,
+        order: 'tarih.desc',
+        limit: 300
+      }))
+    );
+    stokHareketler = _harResults.flat().sort((a,b) => new Date(b.tarih)-new Date(a.tarih));
   } catch(e) {}
 
-  // hareket_logu'ndan stok ile ilgili kayıtları çek
-  const loglar = await db.query('hareket_logu', {
-    filter: 'urun_id=eq.' + urunId + '&islem_tipi=like.*STOK*',
-    order: 'tarih.desc',
-    limit: 100
-  });
+  // hareket_logu'ndan tüm grup kayıtlarını çek
+  const _logResults = await Promise.all(
+    _fetchIds.map(id => db.query('hareket_logu', {
+      filter: 'urun_id=eq.' + id + '&islem_tipi=like.*STOK*',
+      order: 'tarih.desc',
+      limit: 100
+    }))
+  );
+  const loglar = _logResults.flat().sort((a,b) => new Date(b.tarih)-new Date(a.tarih));
 
   // stok_hareketleri öncelikli, loglar tamamlayıcı
   // stokGecmisLogs = tüm kayıtlar birleştirilmiş
@@ -6039,10 +6079,18 @@ function renderStok(kalemler) {
     const kritik = minEsik > 0 && miktar <= minEsik;
 
     const tr = document.createElement('tr');
+    // Grup adı mı yoksa orijinal ad mı?
+    const gorAd = s._grupAd || s.ad || '—';
+    const gorKayitNo = s._grupKayitlar && s._grupKayitlar.length > 1
+      ? s._grupKayitlar.length + ' kayıt'
+      : (s.kayit_no || '—');
+    const gorMarka = s._grupKayitlar && s._grupKayitlar.length > 1
+      ? s._grupKayitlar.map(k => k.ad).join(', ')
+      : (s.marka || '');
     tr.innerHTML =
-      '<td class="td-mono" style="font-size:11px;">' + (s.kayit_no||'—') + '</td>'
-      + '<td><strong>' + (s.ad||'—') + '</strong>'
-      + (s.marka ? '<div class="td-muted" style="font-size:10px">' + s.marka + '</div>' : '')
+      '<td class="td-mono" style="font-size:11px;">' + gorKayitNo + '</td>'
+      + '<td><strong>' + gorAd + '</strong>'
+      + (gorMarka ? '<div class="td-muted" style="font-size:10px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + gorMarka + '">' + gorMarka + '</div>' : '')
       + '</td>'
       + '<td class="td-muted">' + kat + '</td>'
       + '<td><span style="font-family:var(--mono);font-size:13px;font-weight:600;color:'
@@ -6200,6 +6248,10 @@ function openStokHareketModal(stokId) {
   editingStokHarId = stokId;
   const s = allStokKalemler.find(x => x.id === stokId);
   if (!s) return;
+  // Grup ise — ana kayda uygula (ilk kayıt)
+  if (s._grupKayitlar && s._grupKayitlar.length > 1) {
+    editingStokHarId = s._grupKayitlar[0].id;
+  }
   const birim = s.stok_birim || s.birim || 'Adet';
   document.getElementById('modal-sh-title').textContent = s.ad + ' — ' + (currentLang==="en"?"Stock Movement":"Stok Hareketi");
   document.getElementById('modal-sh-mevcut').innerHTML =
